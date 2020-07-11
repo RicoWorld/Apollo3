@@ -1,0 +1,63 @@
+<html>
+<body>
+<pre>
+<h1>µVision Build Log</h1>
+<h2>Tool Versions:</h2>
+IDE-Version: ¦ÌVision V5.26.2.0
+Copyright (C) 2018 ARM Ltd and ARM Germany GmbH. All rights reserved.
+License Information: L Administrator, MJ, LIC=21E4T-R79YR-Y80FK-ZK39K-B7KGJ-53R6B
+ 
+Tool Versions:
+Toolchain:       MDK-ARM Plus  Version: 5.26.2.0
+Toolchain Path:  F:\Keil_v5\ARM\ARMCC\Bin
+C Compiler:      Armcc.exe V5.06 update 6 (build 750)
+Assembler:       Armasm.exe V5.06 update 6 (build 750)
+Linker/Locator:  ArmLink.exe V5.06 update 6 (build 750)
+Library Manager: ArmAr.exe V5.06 update 6 (build 750)
+Hex Converter:   FromElf.exe V5.06 update 6 (build 750)
+CPU DLL:         SARMCM3.DLL V5.26.2.0
+Dialog DLL:      DCM.DLL V1.17.2.0
+Target DLL:      Segger\JL2CM3.dll V2.99.31.0
+Dialog DLL:      TCM.DLL V1.36.1.0
+ 
+<h2>Project:</h2>
+F:\ambiq711\AmbiqSuite-Rel2.2.0\boards\apollo3_evb\examples\mspi_quad_example\keil\mspi_quad_example.uvprojx
+Project File Date:  07/10/2020
+
+<h2>Output:</h2>
+*** Using Compiler 'V5.06 update 6 (build 750)', folder: 'F:\Keil_v5\ARM\ARMCC\Bin'
+Rebuild target 'mspi_quad_example'
+compiling mspi_quad_example.c...
+../src/mspi_quad_example.c(312): warning:  #177-D: variable "test_function"  was declared but never referenced
+      mspi_xip_test_function_t test_function = (mspi_xip_test_function_t)((MSPI_XIP_BASE_ADDRESS + (MSPI_TARGET_SECTOR << 16)) | 0x00000001);
+../src/mspi_quad_example.c(218): warning:  #177-D: function "xip_test_function"  was declared but never referenced
+  __asm static void xip_test_function(void)
+../src/mspi_quad_example.c: 2 warnings, 0 errors
+compiling am_devices_fireball.c...
+compiling am_devices_mspi_flash.c...
+compiling am_util_delay.c...
+compiling am_util_faultisr.c...
+compiling am_util_stdio.c...
+assembling startup_keil.s...
+linking...
+Program Size: Code=20280 RO-data=1584 RW-data=216 ZI-data=26768  
+After Build - User command #1: fromelf --bin --output bin\mspi_quad_example.bin bin\mspi_quad_example.axf
+After Build - User command #2: fromelf -cedrst --output bin\mspi_quad_example.txt bin\mspi_quad_example.axf
+".\bin\mspi_quad_example.axf" - 0 Error(s), 2 Warning(s).
+
+<h2>Software Packages used:</h2>
+
+Package Vendor: AmbiqMicro
+                http://s3.asia.ambiqmicro.com/pack/AmbiqMicro.Apollo_DFP.1.2.0.pack
+                AmbiqMicro.Apollo_DFP.1.2.0
+                Ambiq Micro Apollo Series Device Support
+
+<h2>Collection of Component include folders:</h2>
+  .\RTE\_mspi_quad_example
+  F:\Keil_v5\ARM\PACK\AmbiqMicro\Apollo_DFP\1.2.0\Device\Include
+
+<h2>Collection of Component Files used:</h2>
+Build Time Elapsed:  00:00:12
+</pre>
+</body>
+</html>

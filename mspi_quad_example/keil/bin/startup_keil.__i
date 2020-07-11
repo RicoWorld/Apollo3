@@ -1,0 +1,6 @@
+--c99 -c --cpu Cortex-M4.fp -g -O0 -Otime --apcs=interwork --split_sections -I ../../../../../CMSIS/AmbiqMicro/Include -I ../src -I ../../../../../mcu/apollo3 -I ../../../../../CMSIS/ARM/Include -I ../../../../../utils -I ../../../../../devices -I ../../../../.. -I ../../../bsp
+-I.\RTE\_mspi_quad_example
+-IF:\Keil_v5\ARM\PACK\AmbiqMicro\Apollo_DFP\1.2.0\Device\Include
+-IF:\Keil_v5\ARM\CMSIS\Include
+-D__UVISION_VERSION="526" -DAPOLLO3_1024 -DAM_UTIL_FAULTISR_PRINT -DAM_PART_APOLLO3 -DGIGA_5F1GQ4RB91G -DAM_PACKAGE_BGA -Dkeil
+-o .\bin\startup_keil.o --omf_browse .\bin\startup_keil.crf --depend .\bin\startup_keil.d "../keil/startup_keil.s"
