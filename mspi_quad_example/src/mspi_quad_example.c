@@ -13,6 +13,17 @@
 //!
 //! GPIO 11 - PDM DATA
 //! GPIO 12 - PDM CLK
+//! GPIO 19 - MSPI CE0
+//! GPIO 24 - MSPI CLK
+//! GPIO 23 - MSPI HOLD
+//! GPIO 4  - MSPI WP
+//! GPIO 26 - MSPI MISO
+//! GPIO 22 - MSPI MOSI
+//! GPIO 35 - UART_TX
+//! GPIO 36 - UART_RX
+//! BOTTON0 - Short Press to start/pause;
+//!           Long  Press to Reset Flash,erase all data
+//! BOTTON1 - Press to transfer flash data to PC by uart
 
 //*****************************************************************************
 
@@ -59,6 +70,117 @@
 #include "am_devices_mspi_flash.h"
 #include "am_util.h"
 
+//*****************************************************************************
+//
+// Macros CTIME
+//
+//*****************************************************************************
+//
+// The default is to use the LFRC as the clock source.
+// Can  use the XTAL via the USE_XTAL define.
+//
+//#define USE_XTAL    1
+#if USE_XTAL
+#define BC_CLKSRC   "XTAL"
+#else
+#define BC_CLKSRC   "LFRC"
+#endif
+
+#ifdef AM_BSP_NUM_LEDS
+#define NUM_LEDS    AM_BSP_NUM_LEDS
+#else
+#define NUM_LEDS    5       // Make up an arbitrary number of LEDs
+#endif
+
+//*****************************************************************************
+//
+// Globals
+//
+//*****************************************************************************
+volatile uint32_t g_ui32TimerCount = 0;
+
+//**************************************
+// Timer configuration.
+//**************************************
+am_hal_ctimer_config_t g_sTimer0 =
+{
+    // Don't link timers.
+    0,
+
+    // Set up Timer0A.
+    (AM_HAL_CTIMER_FN_REPEAT    |
+     AM_HAL_CTIMER_INT_ENABLE   |
+#if USE_XTAL
+     AM_HAL_CTIMER_XT_256HZ),
+#else
+     AM_HAL_CTIMER_LFRC_32HZ),
+#endif
+
+    // No configuration for Timer0B.
+    0,
+};
+
+
+
+//*****************************************************************************
+//
+// Function to initialize Timer A0 to interrupt every 1/4 second.
+//
+//*****************************************************************************
+void
+timerA0_init(void)
+{
+    uint32_t ui32Period;
+
+    //
+    // Enable the LFRC.
+    //
+#if USE_XTAL
+    am_hal_clkgen_control(AM_HAL_CLKGEN_CONTROL_XTAL_START, 0);
+#else
+    am_hal_clkgen_control(AM_HAL_CLKGEN_CONTROL_LFRC_START, 0);
+#endif
+
+    //
+    // Set up timer A0.
+    //
+    am_hal_ctimer_clear(0, AM_HAL_CTIMER_TIMERA);
+    am_hal_ctimer_config(0, &g_sTimer0);
+
+    //
+    // Set up timerA0 to 32Hz from LFRC divided to 1/4 second period.
+    //
+    ui32Period = 8;
+#if USE_XTAL
+    ui32Period *= 8;
+#endif
+    am_hal_ctimer_period_set(0, AM_HAL_CTIMER_TIMERA, ui32Period,
+                             (ui32Period >> 1));
+
+    //
+    // Clear the timer Interrupt
+    //
+    am_hal_ctimer_int_clear(AM_HAL_CTIMER_INT_TIMERA0);
+}
+
+
+//*****************************************************************************
+//
+// UART handle.
+//
+//*****************************************************************************
+
+
+
+//*****************************************************************************
+//
+// UART parameters.
+//
+//*****************************************************************************
+bool botton2       = false;
+bool uart_transfer = false;
+
+	
 
 //*****************************************************************************
 //
@@ -72,9 +194,20 @@
 const am_hal_gpio_pincfg_t g_deepsleep_button0 =
 {
     .uFuncSel = 3,
+    .eIntDir = AM_HAL_GPIO_PIN_INTDIR_HI2LO,
+    .eGPInput = AM_HAL_GPIO_PIN_INPUT_ENABLE,
+};
+
+//
+// Set up the configuration for BUTTON1.
+//
+const am_hal_gpio_pincfg_t g_deepsleep_button1 =
+{
+    .uFuncSel = 3,
     .eIntDir = AM_HAL_GPIO_PIN_INTDIR_LO2HI,
     .eGPInput = AM_HAL_GPIO_PIN_INPUT_ENABLE,
 };
+
 
 //*****************************************************************************
 //
@@ -92,7 +225,13 @@ const am_hal_gpio_pincfg_t g_deepsleep_button0 =
 //*****************************************************************************
 volatile bool g_bPDMDataReady = false;
 volatile bool buff_switch     = false;  //false:buff1;true:buff2
-volatile bool power_on        = false;  //false:power off;true:power on
+bool          power_on                 = false;  //false:power off;true:power on
+
+bool          g_ui32TBottonEnd= false;
+
+
+uint32_t      g_ui32BottonStatus; //the botton value of GIPI(high or low)
+
 uint32_t      count = 0 ;
 
 uint32_t      g_ui32PDMDataBuffer1[PDM_SIZE];  //4byte *528 = 2112 byte = 1page
@@ -168,7 +307,7 @@ pdm_init(void)
                                             | AM_HAL_PDM_INT_UNDFL
                                             | AM_HAL_PDM_INT_OVF));
 
-    NVIC_EnableIRQ(PDM_IRQn);
+    NVIC_EnableIRQ(PDM_IRQn); 
 }
 
 //*****************************************************************************
@@ -239,11 +378,14 @@ pdm_data_get(void)
     // Configure DMA and target address.
     //
     am_hal_pdm_transfer_t sTransfer;
-	if(buff_switch){
-    sTransfer.ui32TargetAddr = (uint32_t ) g_ui32PDMDataBuffer1;
-	}
-	else{sTransfer.ui32TargetAddr = (uint32_t ) g_ui32PDMDataBuffer2;
-	}
+	  if(buff_switch)
+    {
+      sTransfer.ui32TargetAddr = (uint32_t ) g_ui32PDMDataBuffer1;
+	  }
+	  else
+    {
+      sTransfer.ui32TargetAddr = (uint32_t ) g_ui32PDMDataBuffer2;
+    }
     sTransfer.ui32TotalCount = PDM_BYTES;
 
     //
@@ -268,16 +410,6 @@ pdm_data_get(void)
 //*****************************************************************************
 
 
-#if FIREBALL_CARD
-//
-// The Fireball device card multiplexes various devices including each of an SPI
-// and I2C FRAM. The Fireball device driver controls access to these devices.
-// If the Fireball card is not used, FRAM devices can be connected directly
-// to appropriate GPIO pins.
-//
-#include "am_devices_fireball.h"
-#endif // FIREBALL_CARD
-
 #define    AM_BSP_GPIO_GP19      19
 
 const am_hal_gpio_pincfg_t g_AM_BSP_GPIO_GP19_CE0 =
@@ -296,14 +428,14 @@ const am_hal_gpio_pincfg_t g_AM_BSP_GPIO_GP19_CE0 =
 #define MSPI_INT_TIMEOUT        (100)
 
 #define MSPI_TARGET_SECTOR      (16) 
-#define MSPI_TARGET_ADDRESS     0x40000 // the fisrt block fisrt page for GIGA Flash,save configure data
+#define MSPI_TARGET_ADDRESS     0x40000 // {10bit,6bit,12bit},{block address,page address,column address}
 #define MSPI_BUFFER_SIZE        (2*1024+64)  // 8k example buffer size.
 
 #define DEFAULT_TIMEOUT         10000
 
 #define MSPI_TEST_MODULE        0
 
-#define MSPI_XIP_BASE_ADDRESS 0x04000000
+#define MSPI_XIP_BASE_ADDRESS   0x04000000
 
 //#define START_SPEED_INDEX       0
 //#define END_SPEED_INDEX         11
@@ -313,11 +445,13 @@ uint8_t         TestBuffer[2048];
 uint8_t         DummyBuffer[1024];
 uint8_t         g_SectorTXBuffer[MSPI_BUFFER_SIZE];
 uint8_t         g_SectorRXBuffer[MSPI_BUFFER_SIZE];
-uint32_t        targer_address = MSPI_TARGET_ADDRESS + 0x1000;
+uint32_t        targer_address[2] = {MSPI_TARGET_ADDRESS,0};
 
 volatile bool   g_bMSPIDataReady = false;
 
-    void          *pHandle = NULL;
+
+
+void            *pHandle = NULL;
 
 
 const am_hal_mspi_dev_config_t      MSPI_Flash_Serial_CE0_MSPIConfig =
@@ -425,8 +559,6 @@ pdm2mspi(void)
 	uint32_t ui32Status;
 	uint8_t *pi8PCMData;
 
- 
-  g_bMSPIDataReady = false;
 
   //
   // Generate data into the Sector Buffer
@@ -449,14 +581,15 @@ pdm2mspi(void)
   //
   // Write the TX buffer into the target sector.
   //
-  am_util_stdio_printf("Writing %d Bytes to Sector %x\n", MSPI_BUFFER_SIZE, targer_address);
-  ui32Status = am_devices_mspi_flash_write(MSPI_TEST_MODULE, g_SectorTXBuffer, targer_address, MSPI_BUFFER_SIZE);
+  am_util_stdio_printf("Writing %d Bytes to the %d blcok ,the %d page\n", MSPI_BUFFER_SIZE, targer_address[0] >> 18,((targer_address[0] >> 12) & 0x0000003F));
+  ui32Status = am_devices_mspi_flash_write(MSPI_TEST_MODULE, g_SectorTXBuffer, targer_address[0], MSPI_BUFFER_SIZE);
   if (AM_DEVICES_MSPI_FLASH_STATUS_SUCCESS != ui32Status)
   {
     am_util_stdio_printf("Failed to write buffer to Flash Device!\n");
   }
 
-  targer_address=targer_address+0x1000;
+  targer_address[0] = targer_address[0]+0x1000;
+  
   g_bMSPIDataReady = true;
 
     //
@@ -503,7 +636,6 @@ am_pdm0_isr(void)
     if (ui32Status & AM_HAL_PDM_INT_DCMP)
     {
 //      am_hal_pdm_disable(PDMHandle);
-			pdm_data_get();
       g_bPDMDataReady = true;
       buff_switch = !buff_switch;
     }
@@ -520,224 +652,69 @@ am_pdm0_isr(void)
 void
 am_gpio_isr(void)
 {
-    uint32_t ui32Status;
-
-	  //
-    // Delay for debounce.
-    //
-//    am_util_delay_ms(30);
-
-		//
-    // Clear the GPIO Interrupt (write to clear).
-    //
-    am_hal_gpio_interrupt_clear(AM_HAL_GPIO_BIT(AM_BSP_GPIO_BUTTON0));
-    //
-    // Toggle LED 0.
-    //
-#ifdef AM_BSP_NUM_LEDS
-//    am_devices_led_toggle(am_bsp_psLEDs, 0);
-#endif
-
-
-
-	if(count > 15){
-    //
-		// Configure the LEDs.
-		//
-		am_devices_led_array_init(am_bsp_psLEDs, AM_BSP_NUM_LEDS);
+    uint64_t g_IntStatus;
+    am_hal_gpio_interrupt_status_get(true,&g_IntStatus);
 	
-		//
-		// Turn the LEDs off, but initialize LED5 on so user will see something.
-		//
-		count = 0;
-	}
-	else {
-    while(1)
-			{
-      if(!power_on){
-		  am_devices_led_toggle(am_bsp_psLEDs, 0);
+//	  am_util_stdio_printf("The INT Status is %lx\n",g_IntStatus);
+    if(((g_IntStatus >> 16) & 0x1) == 1)
+    {
+      am_hal_gpio_interrupt_clear(AM_HAL_GPIO_BIT(AM_BSP_GPIO_BUTTON0));
+      //
+      // Start timer A0
+      //
+      am_hal_ctimer_start(0, AM_HAL_CTIMER_TIMERA);
 
-	    //
-	    //Read the write address from Target Address
-	    //
-//	    ui32Status = am_devices_mspi_flash_read(MSPI_TEST_MODULE,g_SectorRXBuffer, MSPI_TARGET_ADDRESS , 4, true);
-//        if (AM_DEVICES_MSPI_FLASH_STATUS_SUCCESS != ui32Status)
-//         {
-//          am_util_stdio_printf("Failed to read buffer to Flash Device!\n");
-//         }
-//      targer_address  = (g_SectorRXBuffer[3]<<24);
-//      targer_address |= (g_SectorRXBuffer[2]<<16);
-//      targer_address |= (g_SectorRXBuffer[1]<<8 );
-//      targer_address |= (g_SectorRXBuffer[0]    );
-
-		   
-      //
-      // Toggle PDM 
-      //
-      pdm_init(); 
-      pdm_config_print();
-      am_hal_pdm_fifo_flush(PDMHandle);
-      pdm_data_get();
-	    power_on = true;
-	    break;
-	  }
-//	  else if(g_bPDMDataReady & power_on) {
-		  else{
-	  	am_devices_led_toggle(am_bsp_psLEDs, 0);
-	    //
-	    //Stop PDM Safly
-	    //
-	    am_hal_pdm_disable(PDMHandle);
-
-      //
-      // Disable the  PDM interrupt 
-      //
-      NVIC_DisableIRQ(PDM_IRQn);
-
-      //
-      // Wait for MSPI Finish			
-			// 
-//        while(!g_bMSPIDataReady){} 
-												
-	      power_on = false;
-			  am_util_stdio_printf("g_bPDMDataReady is %d \n",g_bPDMDataReady);
-				am_util_stdio_printf("g_bMSPIReady is %d \n",g_bMSPIDataReady);
-				g_bPDMDataReady = false;
-				g_bMSPIDataReady = false;
-  	    break;
-   	  }
+      g_ui32TimerCount = 0;
     }
-	}
+	
+	if(((g_IntStatus >> 18) & 0x1) == 1)
+    {
+      am_hal_gpio_interrupt_clear(AM_HAL_GPIO_BIT(AM_BSP_GPIO_BUTTON1));
+			
+	    botton2 = true;
+	  
+    }
+
 
 }
 
 
 //*****************************************************************************
 //
-// Static function to be executed from external flash device
+// Timer Interrupt Service Routine (ISR)
 //
 //*****************************************************************************
-#if defined(__GNUC_STDC_INLINE__)
-__attribute__((naked))
-static void xip_test_function(void)
+void
+am_ctimer_isr(void)
 {
-    __asm
-    (
-        "   nop\n"              // Just execute NOPs and return.
-        "   nop\n"
-        "   nop\n"
-        "   nop\n"
-        "   nop\n"
-        "   nop\n"
-        "   nop\n"
-        "   nop\n"
-        "   nop\n"
-        "   nop\n"
-        "   nop\n"
-        "   nop\n"
-        "   nop\n"
-        "   nop\n"
-        "   nop\n"
-        "   nop\n"
-        "   nop\n"
-        "   nop\n"
-        "   nop\n"
-        "   nop\n"
-        "   nop\n"
-        "   nop\n"
-        "   nop\n"
-        "   nop\n"
-        "   nop\n"
-        "   nop\n"
-        "   nop\n"
-        "   nop\n"
-        "   nop\n"
-        "   nop\n"
-        "   nop\n"
-        "   nop\n"
-        "   bx      lr\n"
-    );
+    //
+    // Increment count and set limit based on the number of LEDs available.
+    //
+
+    am_hal_gpio_state_read(AM_BSP_GPIO_BUTTON0, AM_HAL_GPIO_INPUT_READ,&g_ui32BottonStatus);
+
+    if (!g_ui32BottonStatus)
+    {
+	    g_ui32TimerCount++ ;
+    }
+    else
+    {
+      //
+      // Stop timer A0.
+      //
+      am_hal_ctimer_clear(0, AM_HAL_CTIMER_TIMERA);
+      g_ui32TBottonEnd = true;
+    }
+
+    //
+    // Clear TimerA0 Interrupt (write to clear).
+    //
+    am_hal_ctimer_int_clear(AM_HAL_CTIMER_INT_TIMERA0);
 }
 
-#elif defined(__ARMCC_VERSION)
-__asm static void xip_test_function(void)
-{
-    nop                         // Just execute NOPs and return.
-    nop
-    nop
-    nop
-    nop
-    nop
-    nop
-    nop
-    nop
-    nop
-    nop
-    nop
-    nop
-    nop
-    nop
-    nop
-    nop
-    nop
-    nop
-    nop
-    nop
-    nop
-    nop
-    nop
-    nop
-    nop
-    nop
-    nop
-    nop
-    nop
-    nop
-    nop
-    bx      lr
-}
 
-#elif defined(__IAR_SYSTEMS_ICC__)
-__stackless static void xip_test_function(void)
-{
-    __asm("    nop");           // Just execute NOPs and return.
-    __asm("    nop");
-    __asm("    nop");
-    __asm("    nop");
-    __asm("    nop");
-    __asm("    nop");
-    __asm("    nop");
-    __asm("    nop");
-    __asm("    nop");
-    __asm("    nop");
-    __asm("    nop");
-    __asm("    nop");
-    __asm("    nop");
-    __asm("    nop");
-    __asm("    nop");
-    __asm("    nop");
-    __asm("    nop");
-    __asm("    nop");
-    __asm("    nop");
-    __asm("    nop");
-    __asm("    nop");
-    __asm("    nop");
-    __asm("    nop");
-    __asm("    nop");
-    __asm("    nop");
-    __asm("    nop");
-    __asm("    nop");
-    __asm("    nop");
-    __asm("    nop");
-    __asm("    nop");
-    __asm("    nop");
-    __asm("    nop");
-    __asm("    bx      lr");
-}
-#endif
 
-#define MSPI_XIP_FUNCTION_SIZE  72
-typedef void (*mspi_xip_test_function_t)(void);
+
 
 //*****************************************************************************
 //
@@ -748,13 +725,12 @@ int
 main(void)
 {
 
-	//*****************************************************************************
-	//
-	// GLOBAL Config
-	//
-	//*****************************************************************************
-
-
+    //*****************************************************************************
+    //
+    // GLOBAL Config
+    //
+    //*****************************************************************************
+    uint32_t column_address;
     //
     // Set the clock frequency.
     //
@@ -770,9 +746,20 @@ main(void)
     // Configure the board for low power operation.
     //
     am_bsp_low_power_init();
+
+    //
+    // Configute the GPIO Pull High
+    //
     ConfigGP19AsGpioOutputForPullHighCE0Pin();
 
-#if 0
+
+    //*****************************************************************************
+    //
+    // Uart Inital and Config 
+    //
+    //*****************************************************************************
+
+#if 1
     //
     // Initialize the printf interface for UART output.
     //
@@ -782,184 +769,81 @@ main(void)
     // Initialize the printf interface for ITM/SWO output.
     //
     am_bsp_itm_printf_enable();
+
 #endif
 
     //
     // Print the banner.
     //
     am_util_stdio_terminal_clear();
-    am_util_stdio_printf("Apollo3 PDM TO MSPI Example\n\n");
-	
-#ifdef AM_PART_APOLLO
-		//
-		// Power down all but the first SRAM banks.
-		//
-		am_hal_mcuctrl_sram_power_set(AM_HAL_MCUCTRL_SRAM_POWER_DOWN_1 |
-									  AM_HAL_MCUCTRL_SRAM_POWER_DOWN_2 |
-									  AM_HAL_MCUCTRL_SRAM_POWER_DOWN_3 |
-									  AM_HAL_MCUCTRL_SRAM_POWER_DOWN_4 |
-									  AM_HAL_MCUCTRL_SRAM_POWER_DOWN_5 |
-									  AM_HAL_MCUCTRL_SRAM_POWER_DOWN_6 |
-									  AM_HAL_MCUCTRL_SRAM_POWER_DOWN_7,
-									  AM_HAL_MCUCTRL_SRAM_POWER_DOWN_1 |
-									  AM_HAL_MCUCTRL_SRAM_POWER_DOWN_2 |
-									  AM_HAL_MCUCTRL_SRAM_POWER_DOWN_3 |
-									  AM_HAL_MCUCTRL_SRAM_POWER_DOWN_4 |
-									  AM_HAL_MCUCTRL_SRAM_POWER_DOWN_5 |
-									  AM_HAL_MCUCTRL_SRAM_POWER_DOWN_6 |
-									  AM_HAL_MCUCTRL_SRAM_POWER_DOWN_7);
-#endif // AM_PART_APOLLO
-	
-#ifdef AM_PART_APOLLO2
-	
-		//
-		// Turn OFF Flash1
-		//
-		PWRCTRL->MEMEN_b.FLASH1 = 0;
-		while ( PWRCTRL->PWRONSTATUS_b.PD_FLAM1 != 0);
-	
-		//
-		// Power down SRAM
-		//
-		PWRCTRL->SRAMPWDINSLEEP_b.SRAMSLEEPPOWERDOWN = PWRCTRL_SRAMPWDINSLEEP_SRAMSLEEPPOWERDOWN_ALLBUTLOWER8K;
-	
-#endif // AM_PART_APOLLO2
-	
-#ifdef AM_PART_APOLLO3
-		//
-		// Turn OFF Flash1
-		//
-//		if ( am_hal_pwrctrl_memory_enable(AM_HAL_PWRCTRL_MEM_FLASH_512K) )
-//		{
-//			while(1);
-//		}
-	
-		//
-		// Power down SRAM
-		//
-//		PWRCTRL->MEMPWDINSLEEP_b.SRAMPWDSLP = PWRCTRL_MEMPWDINSLEEP_SRAMPWDSLP_ALLBUTLOWER32K;
-#endif // AM_PART_APOLLO3
+    am_util_stdio_printf("Apollo3 PDM TO MSPI Example\r\n");
+		
 
-	//*****************************************************************************
-	//
-	// GPIO Botton Config
-	//
-	//*****************************************************************************
-#if defined(AM_BSP_NUM_BUTTONS)  &&  defined(AM_BSP_NUM_LEDS)
-		//
-		// Configure the button pin.
-		//
-		am_hal_gpio_pinconfig(AM_BSP_GPIO_BUTTON0, g_deepsleep_button0);
-	
-		//
-		// Clear the GPIO Interrupt (write to clear).
-		//
-		am_hal_gpio_interrupt_clear(AM_HAL_GPIO_BIT(AM_BSP_GPIO_BUTTON0));
-	
-		//
-		// Enable the GPIO/button interrupt.
-		//
-		am_hal_gpio_interrupt_enable(AM_HAL_GPIO_BIT(AM_BSP_GPIO_BUTTON0));
-	
-		//
-		// Configure the LEDs.
-		//
-		am_devices_led_array_init(am_bsp_psLEDs, AM_BSP_NUM_LEDS);
-	
-		//
-		// Turn the LEDs off, but initialize LED5 on so user will see something.
-		//
-		for (int ix = 0; ix < AM_BSP_NUM_LEDS-1; ix++)
-		{
-			am_devices_led_off(am_bsp_psLEDs, ix);
-		    am_util_delay_ms(500);
-		}
 
-        //
-        // Power On Indication
-        //
-		am_devices_led_on(am_bsp_psLEDs, 4);   
 
 
 
 		
+
+    //*****************************************************************************
+    //
+    // GPIO Botton Config
+    //
+    //*****************************************************************************
+#if defined(AM_BSP_NUM_BUTTONS)  &&  defined(AM_BSP_NUM_LEDS)
+    //
+    // Configure the button pin.
+    //
+    am_hal_gpio_pinconfig(AM_BSP_GPIO_BUTTON0, g_deepsleep_button0);
+	
+    //
+    // Clear the GPIO Interrupt (write to clear).
+    //
+    am_hal_gpio_interrupt_clear(AM_HAL_GPIO_BIT(AM_BSP_GPIO_BUTTON0));
+    
+    //
+    // Enable the GPIO/button interrupt.
+    //
+    am_hal_gpio_interrupt_enable(AM_HAL_GPIO_BIT(AM_BSP_GPIO_BUTTON0));
+
+
+    //
+    // Configure the button pin.
+    //
+    am_hal_gpio_pinconfig(AM_BSP_GPIO_BUTTON1, g_deepsleep_button1);
+
+    //
+    // Clear the GPIO Interrupt (write to clear).
+    //
+    am_hal_gpio_interrupt_clear(AM_HAL_GPIO_BIT(AM_BSP_GPIO_BUTTON1));
+    
+    //
+    // Enable the GPIO/button interrupt.
+    //
+    am_hal_gpio_interrupt_enable(AM_HAL_GPIO_BIT(AM_BSP_GPIO_BUTTON1));
+    
+    //
+    // Configure the LEDs.Power On Indication
+    //
+    am_devices_led_array_init(am_bsp_psLEDs, AM_BSP_NUM_LEDS);
+		
+    //
+    // Eanble GIPO interrput
+    //
+	
+    NVIC_EnableIRQ(GPIO_IRQn);
+    
+
+
 #endif
 
-	//*****************************************************************************
-	//
-	// Flash and MSPI Config.
-	//
-	//*****************************************************************************
+    //*****************************************************************************
+    //
+    // Flash and MSPI Config.
+    //
+    //*****************************************************************************
 
     uint32_t      ui32Status;
-//    void          *pHandle = NULL;
-//    uint32_t      funcAddr = ((uint32_t)&xip_test_function) & 0xFFFFFFFE;
-
-    //
-    // Cast a pointer to the begining of the sector as the test function to call.
-    //
-//    mspi_xip_test_function_t test_function = (mspi_xip_test_function_t)((MSPI_XIP_BASE_ADDRESS + (MSPI_TARGET_SECTOR << 16)) | 0x00000001);
-
-
-
-
-#if FIREBALL_CARD
-    //
-    // Set the MUX for the Flash Device
-    //
-    uint32_t ui32Ret, ui32ID;
-
-#if 1
-    //
-    // Get Fireball ID and Rev info.
-    //
-    ui32Ret = am_devices_fireball_control(AM_DEVICES_FIREBALL_STATE_ID_GET, &ui32ID);
-    if ( ui32Ret != 0 )
-    {
-        am_util_stdio_printf("FAIL: am_devices_fireball_control(%d) returned 0x%X.\n",
-                             AM_DEVICES_FIREBALL_STATE_ID_GET, ui32Ret);
-        return -1;
-    }
-    else if ( ui32ID == FIREBALL_ID )
-    {
-        am_util_stdio_printf("Fireball found, ID is 0x%X.\n", ui32ID);
-    }
-    else
-    {
-        am_util_stdio_printf("Unknown device returned ID as 0x%X.\n", ui32ID);
-    }
-
-    ui32Ret = am_devices_fireball_control(AM_DEVICES_FIREBALL_STATE_VER_GET, &ui32ID);
-    if ( ui32Ret != 0 )
-    {
-        am_util_stdio_printf("FAIL: am_devices_fireball_control(%d) returned 0x%X.\n",
-                             AM_DEVICES_FIREBALL_STATE_VER_GET, ui32Ret);
-        return -1;
-    }
-    else
-    {
-        am_util_stdio_printf("Fireball Version is 0x%X.\n", ui32ID);
-    }
-#endif
-
-#if !defined(ADESTO_ATXP032)
-    ui32Ret = am_devices_fireball_control(AM_DEVICES_FIREBALL_STATE_TWIN_QUAD_CE0_CE1, 0);
-    if ( ui32Ret != 0 )
-    {
-        am_util_stdio_printf("FAIL: am_devices_fireball_control(%d) returned 0x%X.\n",
-                             AM_DEVICES_FIREBALL_STATE_TWIN_QUAD_CE0_CE1, ui32Ret);
-        return -1;
-    }
-#else
-    ui32Ret = am_devices_fireball_control(AM_DEVICES_FIREBALL_STATE_OCTAL_FLASH_CE0, 0);
-    if ( ui32Ret != 0 )
-    {
-        am_util_stdio_printf("FAIL: am_devices_fireball_control(%d) returned 0x%X.\n",
-                             AM_DEVICES_FIREBALL_STATE_OCTAL_FLASH_CE0, ui32Ret);
-        return -1;
-    }
-#endif
-#endif // FIREBALL_CARD
 
     am_util_delay_ms(10); //for flash power on timing
     //
@@ -968,81 +852,205 @@ main(void)
     ui32Status = am_devices_mspi_flash_init(MSPI_TEST_MODULE, (am_hal_mspi_dev_config_t *)&MSPI_Flash_Serial_CE0_MSPIConfig, &pHandle);
     if (AM_DEVICES_MSPI_FLASH_STATUS_SUCCESS != ui32Status)
     {
-        am_util_stdio_printf("Failed to configure the MSPI and Flash Device correctly!\n");
+        am_util_stdio_printf("Failed to configure the MSPI and Flash Device correctly!\r\n");
     }
 
-	  ui32Status = am_devices_mspi_flash_id(MSPI_TEST_MODULE);
+    ui32Status = am_devices_mspi_flash_id(MSPI_TEST_MODULE);
     if (AM_DEVICES_MSPI_FLASH_STATUS_SUCCESS != ui32Status)
     {
-        am_util_stdio_printf("Flash Device ID is uncorrectly!\n");
+        am_util_stdio_printf("Flash Device ID is uncorrectly!\r\n");
     }
 
 
-
-
-	  am_devices_led_off(am_bsp_psLEDs, 4);
-
-
-	//*****************************************************************************
-	//
-	// PDM config
-	//
-	//*****************************************************************************
-
-	//
-    // Turn on the PDM, set it up for our chosen recording settings, and start
-    // the first DMA transaction.
     //
-    //pdm_init();   // control by gpio interrupt
-    //pdm_config_print();
-    //am_hal_pdm_fifo_flush(PDMHandle);
-    //pdm_data_get();
-
-
-    //////////////////////////////////////////////
-    // process start after enable GPIO interrput
-    // bottom for start/end
-    /////////////////////////////////////////////
-
+    // Turn the LEDs off, Initialize Finish.
     //
-    // Eanble GIPO interrput
-    //
-		
-		uint32_t ui32BottonStatus ;
-	  NVIC_EnableIRQ(GPIO_IRQn);
-    am_hal_interrupt_master_enable();
+    for (int ix = 0; ix < AM_BSP_NUM_LEDS; ix++)
+    {
+    	am_devices_led_off(am_bsp_psLEDs, ix);
+        am_util_delay_ms(500);
+    }
+
 	
+    //*****************************************************************************
+    //
+    // PDM Config.
+    //
+    //*****************************************************************************
+
+    pdm_init(); 
+	
+    pdm_config_print();
+	
+    am_hal_pdm_fifo_flush(PDMHandle);
+
+
+    //*****************************************************************************
+    //
+    // Timer Config.
+    //
+    //*****************************************************************************
+
+    //
+    // TimerA0 init.
+    //
+    timerA0_init();
+
+    //
+    // Enable the timer Interrupt.
+    //
+    am_hal_ctimer_int_enable(AM_HAL_CTIMER_INT_TIMERA0);
+
+
+    //
+    // Enable the timer interrupt in the NVIC.
+    //
+    NVIC_EnableIRQ(CTIMER_IRQn);
+
+
+
+
+
+
+    //*****************************************************************************
+    //
+    // Main Process 
+    //
+    //*****************************************************************************
+
+    am_hal_interrupt_master_enable();
+
+
     //
     // Loop forever while sleeping.
     //
     while (1)
     {
-//       am_hal_interrupt_master_disable();
-//       am_hal_gpio_state_read(AM_BSP_GPIO_BUTTON0,AM_HAL_GPIO_INPUT_READ,&ui32BottonStatus);
-	       while(!ui32BottonStatus){
-//			 am_hal_gpio_state_read(AM_BSP_GPIO_BUTTON0,AM_HAL_GPIO_INPUT_READ,&ui32BottonStatus);
-	     }	
-        if (g_bPDMDataReady)
+			
+      //
+      //botton0 behavior
+      //
+			
+      if(g_ui32TBottonEnd)
+      {
+        g_ui32TBottonEnd=false;
+        if(g_ui32TimerCount > 4) 
+        {
+					 am_hal_pdm_disable(PDMHandle);
+					
+           am_devices_led_array_init(am_bsp_psLEDs, AM_BSP_NUM_LEDS);
+
+           am_devices_mspi_flash_mass_erase(MSPI_TEST_MODULE);
+					
+           targer_address[0] = MSPI_TARGET_ADDRESS;
+					
+           targer_address[1] = 0;
+							
+           for (int ix = 0; ix < AM_BSP_NUM_LEDS; ix++)
+           {
+             am_util_delay_ms(500); 
+             am_devices_led_off(am_bsp_psLEDs, ix);
+           }
+        }
+        else
+        {
+          am_devices_led_toggle(am_bsp_psLEDs, 0);	
+          power_on = !power_on;
+					
+          if(power_on)
+          {
+              am_devices_mspi_flash_read(MSPI_TEST_MODULE,g_SectorRXBuffer, 0x7FC0000,MSPI_BUFFER_SIZE,true);	 //511 block for register
+              uint32_t *current_address = (uint32_t *)g_SectorRXBuffer;
+              for(uint32_t i = 2;i < MSPI_BUFFER_SIZE/8; i=i+1)
+              {	
+                if(current_address[i] == 0xffffffff && current_address[i+1] == 0xffffffff)
+                {
+             	  targer_address[0] =  current_address[i-2];
+                  targer_address[1] =  current_address[i-1];
+                  break;								
+							  }
+              }
+						am_util_stdio_printf("the target[0] read is %x\r\n",targer_address[0]);
+            am_util_stdio_printf("the target[1] read is %x\r\n",targer_address[1]);
+            pdm_data_get();
+          }
+          else
+          {
+            targer_address[1] = targer_address[1] + 1;
+            if(targer_address[1] == 264)
+            {
+           	  column_address = column_address + 0x10000; //next page
+            }						
+						else
+            {
+              column_address = 0x7FC0000 + (targer_address[1] << 3); //8 byte per write
+						}							
+            am_util_stdio_printf("the target[0] write is %x\r\n",targer_address[0]);
+            am_util_stdio_printf("the target[1] write is %x\r\n",targer_address[1]);
+            am_devices_mspi_flash_write(MSPI_TEST_MODULE,(uint8_t *)targer_address, column_address, 8);					
+            am_hal_pdm_disable(PDMHandle);
+          }
+        }
+      }		
+
+			
+      //
+      //Botton2 Behavior
+      //
+			
+			if(botton2 && !power_on)
+      {
+        botton2 = false;
+				uart_transfer = !uart_transfer;
+				if(uart_transfer)
+        {
+          am_util_stdio_printf("pcm data transefer start\n");
+        }
+				else
+        {
+          am_util_stdio_printf("\n");
+          am_util_stdio_printf("pcm data transefer end\n");
+        }
+			}
+			
+			if(uart_transfer)
+      {
+
+        //
+        // Print the banner.
+        //
+				am_devices_mspi_flash_read(MSPI_TEST_MODULE,g_SectorRXBuffer, MSPI_TARGET_ADDRESS,MSPI_BUFFER_SIZE,true);
+				for(uint32_t i =0;i<MSPI_BUFFER_SIZE;i++)
+        {
+          am_util_stdio_printf("%x",g_SectorRXBuffer[i]);
+        }
+        am_devices_led_on(am_bsp_psLEDs, 1);
+
+     }
+			else
+      {
+        am_devices_led_off(am_bsp_psLEDs, 1);	
+//        am_bsp_itm_printf_enable();
+      }
+      //
+      //PDM Data to MSPI
+      //
+      if(power_on)
+      {
+        if(g_bPDMDataReady)
         {
             g_bPDMDataReady = false;
-
-            am_util_stdio_printf("THE Flash Address[%x] Write Compelete\n\n",targer_address);					
-			
+						
+            pdm_data_get();
+					
             pdm2mspi();
-			
-            while (PRINT_PDM_DATA);
-
-            //
-            // Start converting the next set of PCM samples.
-            //
-//            pdm_data_get();
-        }
-			//
+        }      
+      }
+      //
       // Go to Deep Sleep.
       //
       am_hal_sysctrl_sleep(AM_HAL_SYSCTRL_SLEEP_DEEP);
     }
-
 
 }
 
