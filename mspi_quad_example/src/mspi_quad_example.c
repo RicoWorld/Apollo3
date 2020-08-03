@@ -177,6 +177,7 @@ timerA0_init(void)
 // UART parameters.
 //
 //*****************************************************************************
+
 bool botton2       = false;
 bool uart_transfer = false;
 
@@ -225,11 +226,11 @@ const am_hal_gpio_pincfg_t g_deepsleep_button1 =
 //*****************************************************************************
 volatile bool g_bPDMDataReady = false;
 volatile bool buff_switch     = false;  //false:buff1;true:buff2
-bool          power_on                 = false;  //false:power off;true:power on
-
+bool          power_on        = false;  //false:power off;true:power on
+bool          power_up        = true ;  //first power on
 bool          g_ui32TBottonEnd= false;
 
-
+bool          botton1         = false;
 uint32_t      g_ui32BottonStatus; //the botton value of GIPI(high or low)
 
 uint32_t      count = 0 ;
@@ -658,6 +659,7 @@ am_gpio_isr(void)
 //	  am_util_stdio_printf("The INT Status is %lx\n",g_IntStatus);
     if(((g_IntStatus >> 16) & 0x1) == 1)
     {
+			botton1 = true;
       am_hal_gpio_interrupt_clear(AM_HAL_GPIO_BIT(AM_BSP_GPIO_BUTTON0));
       //
       // Start timer A0
@@ -670,8 +672,15 @@ am_gpio_isr(void)
 	if(((g_IntStatus >> 18) & 0x1) == 1)
     {
       am_hal_gpio_interrupt_clear(AM_HAL_GPIO_BIT(AM_BSP_GPIO_BUTTON1));
-			
+		  uart_transfer = !uart_transfer;
 	    botton2 = true;
+			
+      //
+      // Start timer A0
+      //
+      am_hal_ctimer_start(0, AM_HAL_CTIMER_TIMERA);
+
+      g_ui32TimerCount = 0;
 	  
     }
 
@@ -861,7 +870,7 @@ main(void)
         am_util_stdio_printf("Flash Device ID is uncorrectly!\r\n");
     }
 
-
+		
     //
     // Turn the LEDs off, Initialize Finish.
     //
@@ -931,20 +940,32 @@ main(void)
       //botton0 behavior
       //
 			
-      if(g_ui32TBottonEnd)
+      if(g_ui32TBottonEnd && botton1)
       {
+				botton1 = false;
         g_ui32TBottonEnd=false;
         if(g_ui32TimerCount > 4) 
         {
 					 am_hal_pdm_disable(PDMHandle);
 					
            am_devices_led_array_init(am_bsp_psLEDs, AM_BSP_NUM_LEDS);
-
-           am_devices_mspi_flash_mass_erase(MSPI_TEST_MODULE);
 					
+           ui32Status=am_devices_mspi_flash_reset(MSPI_TEST_MODULE);
+					 if (AM_DEVICES_MSPI_FLASH_STATUS_SUCCESS != ui32Status)
+           {
+             am_util_stdio_printf("Failed to RESET the MSPI and Flash Device correctly!\r\n");
+           }
+           ui32Status=am_devices_mspi_flash_mass_erase(MSPI_TEST_MODULE);
+					 {
+             am_util_stdio_printf("Failed to MASS ERASE the MSPI and Flash Device correctly!\r\n");
+           }
            targer_address[0] = MSPI_TARGET_ADDRESS;
 					
            targer_address[1] = 0;
+					 
+					 column_address = 0x7FC0000;
+					
+					 am_devices_mspi_flash_write(MSPI_TEST_MODULE,(uint8_t *)targer_address, 0x7FC0000, 8);			
 							
            for (int ix = 0; ix < AM_BSP_NUM_LEDS; ix++)
            {
@@ -959,32 +980,46 @@ main(void)
 					
           if(power_on)
           {
-              am_devices_mspi_flash_read(MSPI_TEST_MODULE,g_SectorRXBuffer, 0x7FC0000,MSPI_BUFFER_SIZE,true);	 //511 block for register
+						uint32_t count = 0;  //for power up to find the next block address
+						bool     address_get = false;
+            while(1)
+            {
+              if(power_up)
+              {
+                am_devices_mspi_flash_read(MSPI_TEST_MODULE,g_SectorRXBuffer, 0x7FC0000+count,MSPI_BUFFER_SIZE,true);	 //511 block for register
+              }
+              else
+              {
+                am_devices_mspi_flash_read(MSPI_TEST_MODULE,g_SectorRXBuffer, column_address,MSPI_BUFFER_SIZE,true);	 
+              }
               uint32_t *current_address = (uint32_t *)g_SectorRXBuffer;
               for(uint32_t i = 2;i < MSPI_BUFFER_SIZE/8; i=i+1)
               {	
-                if(current_address[i] == 0xffffffff && current_address[i+1] == 0xffffffff)
-                {
-             	  targer_address[0] =  current_address[i-2];
-                  targer_address[1] =  current_address[i-1];
-                  break;								
-							  }
+                  if(current_address[i] == 0xffffffff && current_address[i+1] == 0xffffffff)
+                  {
+             	      targer_address[0] =  current_address[i-2];
+                    targer_address[1] =  current_address[i-1];
+										power_up    = false;
+                    address_get = true;
+                    break;								
+							    }
               }
-						am_util_stdio_printf("the target[0] read is %x\r\n",targer_address[0]);
+              if(address_get){break;}
+              count = count + 0x1000;	
+            }
+            am_util_stdio_printf("the target[0] read is %x\r\n",targer_address[0]);
             am_util_stdio_printf("the target[1] read is %x\r\n",targer_address[1]);
             pdm_data_get();
           }
           else
           {
+            uint32_t page_offset;
             targer_address[1] = targer_address[1] + 1;
-            if(targer_address[1] == 264)
-            {
-           	  column_address = column_address + 0x10000; //next page
-            }						
-						else
-            {
-              column_address = 0x7FC0000 + (targer_address[1] << 3); //8 byte per write
-						}							
+            page_offset       = targer_address[1] / 264   ; 						
+            column_address    = 0x7FC0000 + page_offset * 0x1000 + (targer_address[1]<<3); //8 byte per write
+					
+            am_util_stdio_printf("the page_offset is %x\r\n",page_offset);
+            am_util_stdio_printf("the column_address is %x\r\n",column_address);
             am_util_stdio_printf("the target[0] write is %x\r\n",targer_address[0]);
             am_util_stdio_printf("the target[1] write is %x\r\n",targer_address[1]);
             am_devices_mspi_flash_write(MSPI_TEST_MODULE,(uint8_t *)targer_address, column_address, 8);					
@@ -998,39 +1033,49 @@ main(void)
       //Botton2 Behavior
       //
 			
-			if(botton2 && !power_on)
+			if(botton2 && !power_on && g_ui32TBottonEnd)
       {
+				g_ui32TBottonEnd=false;
         botton2 = false;
-				uart_transfer = !uart_transfer;
 				if(uart_transfer)
         {
-          am_util_stdio_printf("pcm data transefer start\n");
-        }
-				else
-        {
-          am_util_stdio_printf("\n");
-          am_util_stdio_printf("pcm data transefer end\n");
+          am_util_stdio_printf("\r\n***************************\r\n");
+          am_util_stdio_printf("**PCM DATA TRANSFER START**\r\n");
+          am_util_stdio_printf("***************************\r\n");
+					am_devices_led_on(am_bsp_psLEDs, 1);
+				  uint32_t target_address = MSPI_TARGET_ADDRESS;
+          //
+          // Print the banner.
+          //
+          for(uint32_t i =0;i<100;i++)
+          {
+				    am_devices_mspi_flash_read(MSPI_TEST_MODULE,g_SectorRXBuffer,target_address ,MSPI_BUFFER_SIZE,true);
+				    for(uint32_t i =0;i<MSPI_BUFFER_SIZE;i++)
+            {
+            am_util_stdio_printf("%x",g_SectorRXBuffer[i]);
+            }
+					  target_address = target_address + 0x1000;
+            if(!uart_transfer)
+            {
+					    break;
+            }					
+          }
+         am_util_stdio_printf("\r\n*************************\r\n");
+         am_util_stdio_printf("**PCM DATA TRANSFER END**\r\n");
+         am_util_stdio_printf("*************************\r\n");
+         am_devices_led_off(am_bsp_psLEDs, 1);
+				 uart_transfer = false;
         }
 			}
 			
 			if(uart_transfer)
       {
 
-        //
-        // Print the banner.
-        //
-				am_devices_mspi_flash_read(MSPI_TEST_MODULE,g_SectorRXBuffer, MSPI_TARGET_ADDRESS,MSPI_BUFFER_SIZE,true);
-				for(uint32_t i =0;i<MSPI_BUFFER_SIZE;i++)
-        {
-          am_util_stdio_printf("%x",g_SectorRXBuffer[i]);
-        }
-        am_devices_led_on(am_bsp_psLEDs, 1);
 
-     }
+      }
 			else
       {
         am_devices_led_off(am_bsp_psLEDs, 1);	
-//        am_bsp_itm_printf_enable();
       }
       //
       //PDM Data to MSPI
