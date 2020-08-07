@@ -19,8 +19,8 @@
 //! GPIO 4  - MSPI WP
 //! GPIO 26 - MSPI MISO
 //! GPIO 22 - MSPI MOSI
-//! GPIO 35 - UART_TX
-//! GPIO 36 - UART_RX
+//! GPIO 29 - UART_TX
+//! GPIO 28 - UART_RX
 //! BOTTON0 - Short Press to start/pause;
 //!           Long  Press to Reset Flash,erase all data
 //! BOTTON1 - Press to transfer flash data to PC by uart
@@ -65,6 +65,7 @@
 //
 //*****************************************************************************
 
+
 #include "am_mcu_apollo.h"
 #include "am_bsp.h"
 #include "am_devices_mspi_flash.h"
@@ -94,7 +95,7 @@
 
 //*****************************************************************************
 //
-// Globals
+// CTIME Globals parameter
 //
 //*****************************************************************************
 volatile uint32_t g_ui32TimerCount = 0;
@@ -164,6 +165,83 @@ timerA0_init(void)
 }
 
 
+
+//*****************************************************************************
+//
+// RTC parameter
+//
+//*****************************************************************************
+//
+// String arrays to index Days and Months with the values returned by the RTC.
+//
+char *pcWeekday[] =
+{
+    "Sunday",
+    "Monday",
+    "Tuesday",
+    "Wednesday",
+    "Thursday",
+    "Friday",
+    "Saturday",
+    "Invalid day"
+};
+char *pcMonth[] =
+{
+    "January",
+    "February",
+    "March",
+    "April",
+    "May",
+    "June",
+    "July",
+    "August",
+    "September",
+    "October",
+    "November",
+    "December",
+    "Invalid month"
+};
+
+am_hal_rtc_time_t hal_time;
+uint32_t    g_LastSecond = 0;
+uint32_t    g_TestCount = 0;
+//*****************************************************************************
+//
+// Support function:
+// toVal() converts a string to an ASCII value.
+//
+//*****************************************************************************
+int
+toVal(char *pcAsciiStr)
+{
+  int iRetVal = 0;
+  iRetVal += pcAsciiStr[1] - '0';
+  iRetVal += pcAsciiStr[0] == ' ' ? 0 : (pcAsciiStr[0] - '0') * 10;
+  return iRetVal;
+}
+
+//*****************************************************************************
+//
+// Support function:
+// mthToIndex() converts a string indicating a month to an index value.
+// The return value is a value 0-12, with 0-11 indicating the month given
+// by the string, and 12 indicating that the string is not a month.
+//
+//*****************************************************************************
+int
+mthToIndex(char *pcMon)
+{
+  int idx;
+  for (idx = 0; idx < 12; idx++)
+  {
+    if ( am_util_string_strnicmp(pcMonth[idx], pcMon, 3) == 0 )
+    {
+      return idx;
+    }
+  }
+  return 12;
+}
+
 //*****************************************************************************
 //
 // UART handle.
@@ -215,9 +293,14 @@ const am_hal_gpio_pincfg_t g_deepsleep_button1 =
 // PDM parameters.
 //
 //*****************************************************************************
+
+
 #define PDM_SIZE                (528)
 #define PDM_BYTES               (PDM_SIZE * 4) //matching for flash one page(2048+64 byte)
-#define PRINT_PDM_DATA              0
+#define PRINT_PDM_DATA           0
+
+#define PDM_FFT_SIZE             4096
+#define PDM_FFT_BYTES            (PDM_FFT_SIZE * 2)
 
 //*****************************************************************************
 //
@@ -235,8 +318,16 @@ uint32_t      g_ui32BottonStatus; //the botton value of GIPI(high or low)
 
 uint32_t      count = 0 ;
 
-uint32_t      g_ui32PDMDataBuffer1[PDM_SIZE];  //4byte *528 = 2112 byte = 1page
-uint32_t      g_ui32PDMDataBuffer2[PDM_SIZE];
+#if defined(fft_test)
+  uint32_t      g_ui32PDMDataBuffer1[PDM_FFT_SIZE];  //4byte *528 = 2112 byte = 1page
+  uint32_t      g_ui32PDMDataBuffer2[PDM_FFT_SIZE];
+  float         g_fPDMTimeDomain[PDM_FFT_SIZE * 2];
+  float         g_fPDMFrequencyDomain[PDM_FFT_SIZE * 2];
+  float         g_fPDMMagnitudes[PDM_FFT_SIZE * 2];
+#else
+  uint32_t      g_ui32PDMDataBuffer1[PDM_SIZE];  //4byte *528 = 2112 byte = 1page
+  uint32_t      g_ui32PDMDataBuffer2[PDM_SIZE];
+#endif
 uint32_t      g_ui32SampleFreq;
 
 
@@ -253,10 +344,10 @@ am_hal_pdm_config_t g_sPdmConfig =
     .eClkDivider = AM_HAL_PDM_MCLKDIV_1,
     .eLeftGain   = AM_HAL_PDM_GAIN_0DB,
     .eRightGain  = AM_HAL_PDM_GAIN_0DB,
-    .ui32DecimationRate = 64,
+    .ui32DecimationRate = 24,
     .bHighPassEnable = 0,
     .ui32HighPassCutoff = 0xB,
-    .ePDMClkSpeed = AM_HAL_PDM_CLK_3MHZ,
+    .ePDMClkSpeed = AM_HAL_PDM_CLK_750KHZ,
     .bInvertI2SBCLK = 0,
     .ePDMClkSource = AM_HAL_PDM_INTERNAL_CLK,
     .bPDMSampleDelay = 0,
@@ -296,8 +387,8 @@ pdm_init(void)
     sPinCfg.uFuncSel = AM_HAL_PIN_12_PDMCLK;
     am_hal_gpio_pinconfig(12, sPinCfg);
 
-    am_hal_gpio_state_write(14, AM_HAL_GPIO_OUTPUT_CLEAR);
-    am_hal_gpio_pinconfig(14, g_AM_HAL_GPIO_OUTPUT);
+//    am_hal_gpio_state_write(14, AM_HAL_GPIO_OUTPUT_CLEAR);
+//    am_hal_gpio_pinconfig(14, g_AM_HAL_GPIO_OUTPUT);
 
     //
     // Configure and enable PDM interrupts (set up to trigger on DMA
@@ -375,33 +466,33 @@ pdm_config_print(void)
 void
 pdm_data_get(void)
 {
-    //
-    // Configure DMA and target address.
-    //
-    am_hal_pdm_transfer_t sTransfer;
-	  if(buff_switch)
-    {
-      sTransfer.ui32TargetAddr = (uint32_t ) g_ui32PDMDataBuffer1;
-	  }
-	  else
-    {
-      sTransfer.ui32TargetAddr = (uint32_t ) g_ui32PDMDataBuffer2;
-    }
-    sTransfer.ui32TotalCount = PDM_BYTES;
+  //
+  // Configure DMA and target address.
+  //
+  am_hal_pdm_transfer_t sTransfer;
+  if(buff_switch)
+  {
+    sTransfer.ui32TargetAddr = (uint32_t ) g_ui32PDMDataBuffer1;
+//	am_util_stdio_printf("put in pdm buffer1\n");
+  }
+  else
+  {
+    sTransfer.ui32TargetAddr = (uint32_t ) g_ui32PDMDataBuffer2;
+//    am_util_stdio_printf("put in pdm buffer2\n");
+  }
+  
+  sTransfer.ui32TotalCount = PDM_BYTES;
 
-    //
-    // Start the data transfer.
-    //
-    am_hal_pdm_enable(PDMHandle);
-    am_util_delay_ms(100);
-    am_hal_pdm_fifo_flush(PDMHandle);
-    am_hal_pdm_dma_start(PDMHandle, &sTransfer);
+  //
+  // Start the data transfer.
+  //
+  
+//  am_hal_pdm_enable(PDMHandle);
+//  am_util_delay_ms(15);
+  am_hal_pdm_fifo_flush(PDMHandle);
+  am_hal_pdm_dma_start(PDMHandle, &sTransfer);
+
 }
-
-
-
-
-
 
 
 //*****************************************************************************
@@ -414,13 +505,12 @@ pdm_data_get(void)
 #define    AM_BSP_GPIO_GP19      19
 
 const am_hal_gpio_pincfg_t g_AM_BSP_GPIO_GP19_CE0 =
-
 {
-.uFuncSel            = AM_HAL_PIN_23_GPIO,
-.eDriveStrength      = AM_HAL_GPIO_PIN_DRIVESTRENGTH_8MA,
-.ePullup             = AM_HAL_GPIO_PIN_PULLUP_WEAK,
-.eGPOutcfg           = AM_HAL_GPIO_PIN_OUTCFG_PUSHPULL,
-.eGPInput            = AM_HAL_GPIO_PIN_INPUT_NONE
+  .uFuncSel            = AM_HAL_PIN_23_GPIO,
+  .eDriveStrength      = AM_HAL_GPIO_PIN_DRIVESTRENGTH_8MA,
+  .ePullup             = AM_HAL_GPIO_PIN_PULLUP_WEAK,
+  .eGPOutcfg           = AM_HAL_GPIO_PIN_OUTCFG_PUSHPULL,
+  .eGPInput            = AM_HAL_GPIO_PIN_INPUT_NONE
 };
 
 
@@ -431,6 +521,7 @@ const am_hal_gpio_pincfg_t g_AM_BSP_GPIO_GP19_CE0 =
 #define MSPI_TARGET_SECTOR      (16) 
 #define MSPI_TARGET_ADDRESS     0x40000 // {10bit,6bit,12bit},{block address,page address,column address}
 #define MSPI_BUFFER_SIZE        (2*1024+64)  // 8k example buffer size.
+//#define MSPI_BUFFER_SIZE        PDM_BYTES
 
 #define DEFAULT_TIMEOUT         10000
 
@@ -458,7 +549,7 @@ void            *pHandle = NULL;
 const am_hal_mspi_dev_config_t      MSPI_Flash_Serial_CE0_MSPIConfig =
 {
   .eSpiMode             = AM_HAL_MSPI_SPI_MODE_0,
-  .eClockFreq           = AM_HAL_MSPI_CLK_3MHZ,
+  .eClockFreq           = AM_HAL_MSPI_CLK_8MHZ,
 #if defined(MICRON_N25Q256A)
   .ui8TurnAround        = 3,
   .eAddrCfg             = AM_HAL_MSPI_ADDR_3_BYTE,
@@ -537,19 +628,19 @@ static void
 ConfigGP19AsGpioOutputForPullHighCE0Pin (void)
 {
 
-        //
-        // Configure the pin as a push-pull GPIO output.
-        //
-        am_hal_gpio_pinconfig(AM_BSP_GPIO_GP19, g_AM_BSP_GPIO_GP19_CE0); 
-        //
-        // Disable the output driver, and set the output value to the high level
-        // state.  Note that for Apollo3 GPIOs in push-pull mode, the output
-        // enable, normally a tri-state control, instead functions as an enable
-        // for Fast GPIO. Its state does not matter on previous chips, so for
-        // normal GPIO usage on Apollo3, it must be disabled.
-        //
-        am_hal_gpio_state_write(AM_BSP_GPIO_GP19, AM_HAL_GPIO_OUTPUT_TRISTATE_DISABLE);
-        am_hal_gpio_state_write(AM_BSP_GPIO_GP19, AM_HAL_GPIO_OUTPUT_SET);   // pull high
+  //
+  // Configure the pin as a push-pull GPIO output.
+  //
+  am_hal_gpio_pinconfig(AM_BSP_GPIO_GP19, g_AM_BSP_GPIO_GP19_CE0); 
+  //
+  // Disable the output driver, and set the output value to the high level
+  // state.  Note that for Apollo3 GPIOs in push-pull mode, the output
+  // enable, normally a tri-state control, instead functions as an enable
+  // for Fast GPIO. Its state does not matter on previous chips, so for
+  // normal GPIO usage on Apollo3, it must be disabled.
+  //
+  am_hal_gpio_state_write(AM_BSP_GPIO_GP19, AM_HAL_GPIO_OUTPUT_TRISTATE_DISABLE);
+  am_hal_gpio_state_write(AM_BSP_GPIO_GP19, AM_HAL_GPIO_OUTPUT_SET);   // pull high
 
 }
 
@@ -565,20 +656,28 @@ pdm2mspi(void)
   // Generate data into the Sector Buffer
   //
     
-  if(buff_switch){
+  if(!buff_switch)
+  {
     pi8PCMData = (uint8_t *) g_ui32PDMDataBuffer1;
+//    am_util_stdio_printf("read from pdm buffer1\n");
   }
-  else{
+  else
+  {
     pi8PCMData = (uint8_t *) g_ui32PDMDataBuffer2;
+//	am_util_stdio_printf("read from pdm buffer2\n");
   }
   //
   // Generate data into the Sector Buffer
   //
-		
+	
   for (uint32_t i = 0; i < MSPI_BUFFER_SIZE; i++)
   {
     g_SectorTXBuffer[i] = pi8PCMData[i];
+
   }
+	
+
+	
   //
   // Write the TX buffer into the target sector.
   //
@@ -592,16 +691,6 @@ pdm2mspi(void)
   targer_address[0] = targer_address[0]+0x1000;
   
   g_bMSPIDataReady = true;
-
-    //
-    // Read the data back into the RX buffer.
-    //
-//    am_util_stdio_printf("Read %d Bytes from Sector %x\n", MSPI_BUFFER_SIZE, MSPI_TARGET_ADDRESS >> 12);
-//    ui32Status = am_devices_mspi_flash_read(MSPI_TEST_MODULE,g_SectorRXBuffer, MSPI_TARGET_ADDRESS , MSPI_BUFFER_SIZE, true);
-//    if (AM_DEVICES_MSPI_FLASH_STATUS_SUCCESS != ui32Status)
-//    {
-//        am_util_stdio_printf("Failed to read buffer to Flash Device!\n");
-//    }
 
 
 }
@@ -618,30 +707,28 @@ pdm2mspi(void)
 void
 am_pdm0_isr(void)
 {
-    uint32_t ui32Status;
+  uint32_t ui32Status;
 
-    //
-    // Read the interrupt status.
-    //
-    am_hal_pdm_interrupt_status_get(PDMHandle, &ui32Status, true);
-    am_hal_pdm_interrupt_clear(PDMHandle, ui32Status);
+  //
+  // Read the interrupt status.
+  //
+  am_hal_pdm_interrupt_status_get(PDMHandle, &ui32Status, true);
+  am_hal_pdm_interrupt_clear(PDMHandle, ui32Status);
 
-    //
-    // Once our DMA transaction completes, we will disable the PDM and send a
-    // flag back down to the main routine. Disabling the PDM is only necessary
-    // because this example only implemented a single buffer for storing FFT
-    // data. More complex programs could use a system of multiple buffers to
-    // allow the CPU to run the FFT in one buffer while the DMA pulls PCM data
-    // into another buffer.
-    //
-    if (ui32Status & AM_HAL_PDM_INT_DCMP)
-    {
-//      am_hal_pdm_disable(PDMHandle);
-      g_bPDMDataReady = true;
-      buff_switch = !buff_switch;
-    }
-
-
+  //
+  // Once our DMA transaction completes, we will disable the PDM and send a
+  // flag back down to the main routine. Disabling the PDM is only necessary
+  // because this example only implemented a single buffer for storing FFT
+  // data. More complex programs could use a system of multiple buffers to
+  // allow the CPU to run the FFT in one buffer while the DMA pulls PCM data
+  // into another buffer.
+  //
+  if (ui32Status & AM_HAL_PDM_INT_DCMP)
+  {
+    g_bPDMDataReady = true;
+//    am_hal_pdm_disable(PDMHandle);
+    buff_switch = !buff_switch;
+  }
 
 }
 
@@ -653,38 +740,34 @@ am_pdm0_isr(void)
 void
 am_gpio_isr(void)
 {
-    uint64_t g_IntStatus;
-    am_hal_gpio_interrupt_status_get(true,&g_IntStatus);
+  uint64_t g_IntStatus;
+  am_hal_gpio_interrupt_status_get(true,&g_IntStatus);
 	
-//	  am_util_stdio_printf("The INT Status is %lx\n",g_IntStatus);
-    if(((g_IntStatus >> 16) & 0x1) == 1)
-    {
-			botton1 = true;
-      am_hal_gpio_interrupt_clear(AM_HAL_GPIO_BIT(AM_BSP_GPIO_BUTTON0));
-      //
-      // Start timer A0
-      //
-      am_hal_ctimer_start(0, AM_HAL_CTIMER_TIMERA);
+  if(((g_IntStatus >> 16) & 0x1) == 1)
+  { 
+    botton1 = true;
+    am_hal_gpio_interrupt_clear(AM_HAL_GPIO_BIT(AM_BSP_GPIO_BUTTON0));
+    //
+    // Start timer A0
+    //
+    am_hal_ctimer_start(0, AM_HAL_CTIMER_TIMERA);
 
-      g_ui32TimerCount = 0;
-    }
+    g_ui32TimerCount = 0;
+  }
 	
-	if(((g_IntStatus >> 18) & 0x1) == 1)
-    {
-      am_hal_gpio_interrupt_clear(AM_HAL_GPIO_BIT(AM_BSP_GPIO_BUTTON1));
-		  uart_transfer = !uart_transfer;
-	    botton2 = true;
-			
-      //
-      // Start timer A0
-      //
-      am_hal_ctimer_start(0, AM_HAL_CTIMER_TIMERA);
+  if(((g_IntStatus >> 18) & 0x1) == 1)
+  {
+    am_hal_gpio_interrupt_clear(AM_HAL_GPIO_BIT(AM_BSP_GPIO_BUTTON1));
+    uart_transfer = !uart_transfer;
+    botton2 = true;
+	
+    //
+    // Start timer A0
+    //
+    am_hal_ctimer_start(0, AM_HAL_CTIMER_TIMERA);
 
-      g_ui32TimerCount = 0;
-	  
-    }
-
-
+    g_ui32TimerCount = 0;
+  }
 }
 
 
@@ -696,32 +779,30 @@ am_gpio_isr(void)
 void
 am_ctimer_isr(void)
 {
-    //
-    // Increment count and set limit based on the number of LEDs available.
-    //
+  //
+  // Increment count and set limit based on the number of LEDs available.
+  //
 
-    am_hal_gpio_state_read(AM_BSP_GPIO_BUTTON0, AM_HAL_GPIO_INPUT_READ,&g_ui32BottonStatus);
+  am_hal_gpio_state_read(AM_BSP_GPIO_BUTTON0, AM_HAL_GPIO_INPUT_READ,&g_ui32BottonStatus);
 
-    if (!g_ui32BottonStatus)
-    {
-	    g_ui32TimerCount++ ;
-    }
-    else
-    {
-      //
-      // Stop timer A0.
-      //
-      am_hal_ctimer_clear(0, AM_HAL_CTIMER_TIMERA);
-      g_ui32TBottonEnd = true;
-    }
+  if (!g_ui32BottonStatus)
+  {
+    g_ui32TimerCount++ ;
+  }
+  else
+  {
+    //
+    // Stop timer A0.
+    //
+    am_hal_ctimer_clear(0, AM_HAL_CTIMER_TIMERA);
+    g_ui32TBottonEnd = true;
+  }
 
-    //
-    // Clear TimerA0 Interrupt (write to clear).
-    //
-    am_hal_ctimer_int_clear(AM_HAL_CTIMER_INT_TIMERA0);
+  //
+  // Clear TimerA0 Interrupt (write to clear).
+  //
+  am_hal_ctimer_int_clear(AM_HAL_CTIMER_INT_TIMERA0);
 }
-
-
 
 
 
@@ -788,11 +869,60 @@ main(void)
     am_util_stdio_printf("Apollo3 PDM TO MSPI Example\r\n");
 		
 
+    //*****************************************************************************
+    //
+    // RTC Inital and Config 
+    //
+    //*****************************************************************************
 
-
-
-
+    //
+    // Set the RTC time 
+    // WARNING this will destroy any time epoch currently in the RTC.
+    //
+#define rtc_load
+#if defined rtc_load
+#if defined(__GNUC__)  ||  defined(__ARMCC_VERSION)  ||  defined(__IAR_SYSTEMS_ICC__)
+    //
+    // The RTC is initialized from the date and time strings that are
+    // obtained from the compiler at compile time.
+    //
+    hal_time.ui32Hour = toVal(&__TIME__[0]);
+    hal_time.ui32Minute = toVal(&__TIME__[3]);
+    hal_time.ui32Second = toVal(&__TIME__[6]);
+    hal_time.ui32Hundredths = 00;
+    hal_time.ui32Weekday = am_util_time_computeDayofWeek(2000 + toVal(&__DATE__[9]), mthToIndex(&__DATE__[0]) + 1, toVal(&__DATE__[4]) );
+    hal_time.ui32DayOfMonth = toVal(&__DATE__[4]);
+    hal_time.ui32Month = mthToIndex(&__DATE__[0]);
+    hal_time.ui32Year = toVal(&__DATE__[9]);
+    hal_time.ui32Century = 0;
+#else
+    //
+    // The RTC is initialized from an arbitrary date.
+    //
+    hal_time.ui32Hour = 14;
+    hal_time.ui32Minute = 24;
+    hal_time.ui32Second = 33;
+    hal_time.ui32Hundredths = 50;
+    hal_time.ui32Weekday = 3;
+    hal_time.ui32DayOfMonth = 15;
+    hal_time.ui32Month = 4;
+    hal_time.ui32Year = 14;
+    hal_time.ui32Century = 0;
+#endif
+#endif
+    am_hal_rtc_time_set(&hal_time);
 		
+    //
+    // Select XT for RTC clock source
+    //
+    am_hal_rtc_osc_select(AM_HAL_RTC_OSC_XT);
+
+    //
+    // Enable the RTC.
+    //
+    am_hal_rtc_osc_enable();
+
+
 
     //*****************************************************************************
     //
@@ -870,15 +1000,6 @@ main(void)
         am_util_stdio_printf("Flash Device ID is uncorrectly!\r\n");
     }
 
-		
-    //
-    // Turn the LEDs off, Initialize Finish.
-    //
-    for (int ix = 0; ix < AM_BSP_NUM_LEDS; ix++)
-    {
-    	am_devices_led_off(am_bsp_psLEDs, ix);
-        am_util_delay_ms(500);
-    }
 
 	
     //*****************************************************************************
@@ -892,6 +1013,38 @@ main(void)
     pdm_config_print();
 	
     am_hal_pdm_fifo_flush(PDMHandle);
+		
+		
+    //*****************************************************************************
+    //
+    // Print RTC Time to Confire RTC is Right
+    //
+    //*****************************************************************************
+    am_hal_rtc_time_get(&hal_time);
+    am_util_stdio_printf("\r\nIt is now ");
+    am_util_stdio_printf("%d : ", hal_time.ui32Hour);
+    am_util_stdio_printf("%02d : ", hal_time.ui32Minute);
+    am_util_stdio_printf("%02d ", hal_time.ui32Second);
+    am_util_stdio_printf(pcWeekday[hal_time.ui32Weekday]);
+    am_util_stdio_printf(" ");
+    am_util_stdio_printf(pcMonth[hal_time.ui32Month]);
+    am_util_stdio_printf(" ");
+    am_util_stdio_printf("%d, ", hal_time.ui32DayOfMonth);
+    am_util_stdio_printf("20%02d", hal_time.ui32Year);
+		
+		
+    //
+    // Turn the LEDs off, Initialize Finish.
+    //
+    for (int ix = 0; ix < AM_BSP_NUM_LEDS; ix++)
+    {
+    	am_devices_led_off(am_bsp_psLEDs, ix);
+      am_util_delay_ms(500);
+    }
+		
+		
+		
+		
 
 
     //*****************************************************************************
@@ -935,14 +1088,14 @@ main(void)
     //
     while (1)
     {
-			
+
       //
       //botton0 behavior
       //
 			
       if(g_ui32TBottonEnd && botton1)
       {
-				botton1 = false;
+        botton1 = false;
         g_ui32TBottonEnd=false;
         if(g_ui32TimerCount > 4) 
         {
@@ -963,9 +1116,9 @@ main(void)
 					
            targer_address[1] = 0;
 					 
-					 column_address = 0x7FC0000;
+           column_address = 0x7FC0000;
 					
-					 am_devices_mspi_flash_write(MSPI_TEST_MODULE,(uint8_t *)targer_address, 0x7FC0000, 8);			
+           am_devices_mspi_flash_write(MSPI_TEST_MODULE,(uint8_t *)targer_address, 0x7FC0000, 8);			
 							
            for (int ix = 0; ix < AM_BSP_NUM_LEDS; ix++)
            {
@@ -980,11 +1133,11 @@ main(void)
 					
           if(power_on)
           {
-						uint32_t count = 0;  //for power up to find the next block address
-						bool     address_get = false;
+            uint32_t count = 0;  //for power up to find the next block address
+            bool     address_get = false;
             while(1)
             {
-              if(power_up)
+              if(power_up) // FISRT POWER UP,Read Register From 511 block
               {
                 am_devices_mspi_flash_read(MSPI_TEST_MODULE,g_SectorRXBuffer, 0x7FC0000+count,MSPI_BUFFER_SIZE,true);	 //511 block for register
               }
@@ -997,18 +1150,18 @@ main(void)
               {	
                   if(current_address[i] == 0xffffffff && current_address[i+1] == 0xffffffff)
                   {
-             	      targer_address[0] =  current_address[i-2];
+             	    targer_address[0] =  current_address[i-2];
                     targer_address[1] =  current_address[i-1];
-										power_up    = false;
+                    power_up    = false;
                     address_get = true;
-                    break;								
-							    }
+                    break;
+                  }
               }
               if(address_get){break;}
               count = count + 0x1000;	
             }
-            am_util_stdio_printf("the target[0] read is %x\r\n",targer_address[0]);
-            am_util_stdio_printf("the target[1] read is %x\r\n",targer_address[1]);
+						am_hal_pdm_enable(PDMHandle);
+						am_util_delay_ms(100);
             pdm_data_get();
           }
           else
@@ -1018,10 +1171,7 @@ main(void)
             page_offset       = targer_address[1] / 264   ; 						
             column_address    = 0x7FC0000 + page_offset * 0x1000 + (targer_address[1]<<3); //8 byte per write
 					
-            am_util_stdio_printf("the page_offset is %x\r\n",page_offset);
-            am_util_stdio_printf("the column_address is %x\r\n",column_address);
-            am_util_stdio_printf("the target[0] write is %x\r\n",targer_address[0]);
-            am_util_stdio_printf("the target[1] write is %x\r\n",targer_address[1]);
+
             am_devices_mspi_flash_write(MSPI_TEST_MODULE,(uint8_t *)targer_address, column_address, 8);					
             am_hal_pdm_disable(PDMHandle);
           }
@@ -1033,50 +1183,35 @@ main(void)
       //Botton2 Behavior
       //
 			
-			if(botton2 && !power_on && g_ui32TBottonEnd)
+      if(botton2 && !power_on && g_ui32TBottonEnd)
       {
-				g_ui32TBottonEnd=false;
+        g_ui32TBottonEnd=false;
         botton2 = false;
-				if(uart_transfer)
+        if(uart_transfer)
         {
-          am_util_stdio_printf("\r\n***************************\r\n");
-          am_util_stdio_printf("**PCM DATA TRANSFER START**\r\n");
-          am_util_stdio_printf("***************************\r\n");
-					am_devices_led_on(am_bsp_psLEDs, 1);
-				  uint32_t target_address = MSPI_TARGET_ADDRESS;
+          am_devices_led_on(am_bsp_psLEDs, 1);
+          uint32_t target_address = MSPI_TARGET_ADDRESS;
           //
           // Print the banner.
           //
-          for(uint32_t i =0;i<100;i++)
+          for(uint32_t i =0;i<200;i++)
           {
-				    am_devices_mspi_flash_read(MSPI_TEST_MODULE,g_SectorRXBuffer,target_address ,MSPI_BUFFER_SIZE,true);
-				    for(uint32_t i =0;i<MSPI_BUFFER_SIZE;i++)
+            am_devices_mspi_flash_read(MSPI_TEST_MODULE,g_SectorRXBuffer,target_address ,MSPI_BUFFER_SIZE,true);
+            for(uint32_t i =0;i<MSPI_BUFFER_SIZE;i++)
             {
-            am_util_stdio_printf("%x",g_SectorRXBuffer[i]);
+              am_util_stdio_printf("%02x",g_SectorRXBuffer[i]);				
             }
-					  target_address = target_address + 0x1000;
+            target_address = target_address + 0x1000;
             if(!uart_transfer)
             {
-					    break;
+              break;
             }					
           }
-         am_util_stdio_printf("\r\n*************************\r\n");
-         am_util_stdio_printf("**PCM DATA TRANSFER END**\r\n");
-         am_util_stdio_printf("*************************\r\n");
-         am_devices_led_off(am_bsp_psLEDs, 1);
-				 uart_transfer = false;
+          am_devices_led_off(am_bsp_psLEDs, 1);
+          uart_transfer = false;
         }
-			}
-			
-			if(uart_transfer)
-      {
+       }
 
-
-      }
-			else
-      {
-        am_devices_led_off(am_bsp_psLEDs, 1);	
-      }
       //
       //PDM Data to MSPI
       //
@@ -1084,18 +1219,21 @@ main(void)
       {
         if(g_bPDMDataReady)
         {
-            g_bPDMDataReady = false;
+          g_bPDMDataReady = false;
 						
-            pdm_data_get();
+          pdm_data_get();
 					
-            pdm2mspi();
+          pdm2mspi();
         }      
       }
       //
       // Go to Deep Sleep.
       //
       am_hal_sysctrl_sleep(AM_HAL_SYSCTRL_SLEEP_DEEP);
+
     }
+		
+
 
 }
 
