@@ -313,6 +313,7 @@ extern "C"
 
 #define AM_DEVICES_MSPI_GD5FXGQ4XC_PROTECTION_REGISTER          0x32   // unlock all blocks except block0
 #define AM_DEVICES_MSPI_GD5FXGQ4XC_FEATURE_REGISTER_SPI         0x10   // ecc enable,spi mode(hold pin enable)
+#define AM_DEVICES_MSPI_GD5FXGQ4XC_FEATURE_REGISTER_ECCOFF      0x00   // ecc enable,spi mode(hold pin enable)
 #define AM_DEVICES_MSPI_GD5FXGQ4XC_FEATURE_REGISTER_QPI         0x11   // ecc enable,qpi mode(hold pin disable)
 #define AM_DEVICES_MSPI_GD5FXGQ4XC_FEATURE_REGISTER2            0x60   // drive strength 100%
 
@@ -415,6 +416,8 @@ am_devices_mspi_flash_read_hiprio(uint8_t *pui8RxBuffer,
                            uint32_t ui32ReadAddress,
                            uint32_t ui32NumBytes,
                            bool bWaitForCompletion);
+
+extern void am_devices_mspi_flash_bad_block(uint32_t ui32Module, uint32_t *p);
 
 
 

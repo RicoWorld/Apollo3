@@ -66,6 +66,8 @@ volatile bool                   g_MSPIDMAComplete;
 
 am_hal_mspi_pio_transfer_t      g_PIOTransaction;
 uint32_t                        g_PIOBuffer[32];
+uint8_t                         g_TRXBuffer[2112];
+
 
 volatile uint32_t               g_MSPIInterruptStatus;
 
@@ -852,7 +854,7 @@ uint32_t am_device_init_flash(uint32_t ui32Module, am_hal_mspi_dev_config_t *psM
     //Read:     maximum tRST = 5us; 
     //Program:  maximum tRST = 10us; 
     //Erase:    maximum tRST = 500us; 
-	am_util_delay_us(1000);  // for stable concern, delay 1000us after software reset	
+	  am_util_delay_us(1000);  // for stable concern, delay 1000us after software reset	
 
     uint32_t g_ui32SR1 = 1 ;
     uint32_t g_ui32SR2 = 0 ;
@@ -860,28 +862,28 @@ uint32_t am_device_init_flash(uint32_t ui32Module, am_hal_mspi_dev_config_t *psM
 	  uint32_t g_ui32SR4 = 0 ;
 
    
-    am_util_stdio_printf("Dump out the REGISTER 1 - 4 before configurating:\n\r");
-	ui32Status = am_device_command_read(ui32Module,AM_DEVICES_MSPI_GD5FXGQ4XC_GET_FEATURES, true, AM_DEVICES_MSPI_GD5FXGQ4XC_PROTECTION_REGISTER_ADDRESS,(uint32_t *)&g_ui32SR1, 1);
+    am_util_stdio_printf("Dump out the REGISTER 1 - 4 before configurating:\r\n");
+	  ui32Status = am_device_command_read(ui32Module,AM_DEVICES_MSPI_GD5FXGQ4XC_GET_FEATURES, true, AM_DEVICES_MSPI_GD5FXGQ4XC_PROTECTION_REGISTER_ADDRESS,(uint32_t *)&g_ui32SR1, 1);
     if (AM_HAL_STATUS_SUCCESS != ui32Status)
     {
         return AM_DEVICES_MSPI_FLASH_STATUS_ERROR;
     }
-    am_util_stdio_printf("PROTECTION is 0x%02X\n", (uint8_t)g_ui32SR1);
-	am_util_delay_us(1000); 
+    am_util_stdio_printf("PROTECTION is 0x%02X\r\n", (uint8_t)g_ui32SR1);
+	  am_util_delay_us(1000); 
 
     ui32Status = am_device_command_read(ui32Module,AM_DEVICES_MSPI_GD5FXGQ4XC_GET_FEATURES, true, AM_DEVICES_MSPI_GD5FXGQ4XC_FEATURE_REGISTER_ADDRESS1, (uint32_t *)&g_ui32SR2, 1);
     if (AM_HAL_STATUS_SUCCESS != ui32Status)
     {
         return AM_DEVICES_MSPI_FLASH_STATUS_ERROR;
     }
-    am_util_stdio_printf("FEATURE_REGISTER_1 is 0x%02X\n", (uint8_t)g_ui32SR2);
+    am_util_stdio_printf("FEATURE_REGISTER_1 is 0x%02X\r\n", (uint8_t)g_ui32SR2);
 		am_util_delay_us(1000); 
     ui32Status = am_device_command_read(ui32Module,AM_DEVICES_MSPI_GD5FXGQ4XC_GET_FEATURES, true, AM_DEVICES_MSPI_GD5FXGQ4XC_STATUS_REGISTER_ADDRESS, (uint32_t *)&g_ui32SR3, 1);
     if (AM_HAL_STATUS_SUCCESS != ui32Status)
     {
         return AM_DEVICES_MSPI_FLASH_STATUS_ERROR;
     }
-    am_util_stdio_printf("STATUS_REGISTER is 0x%02X\n", (uint8_t)g_ui32SR3);   
+    am_util_stdio_printf("STATUS_REGISTER is 0x%02X\r\n", (uint8_t)g_ui32SR3);   
 
 		am_util_delay_us(1000); 
     ui32Status = am_device_command_read(ui32Module,AM_DEVICES_MSPI_GD5FXGQ4XC_GET_FEATURES, true, AM_DEVICES_MSPI_GD5FXGQ4XC_FEATURE_REGISTER_ADDRESS2, (uint32_t *)&g_ui32SR4, 1);
@@ -889,7 +891,7 @@ uint32_t am_device_init_flash(uint32_t ui32Module, am_hal_mspi_dev_config_t *psM
     {
         return AM_DEVICES_MSPI_FLASH_STATUS_ERROR;
     }
-    am_util_stdio_printf("FEATURE_REGISTER_2 is 0x%02X\n", (uint8_t)g_ui32SR4);   
+    am_util_stdio_printf("FEATURE_REGISTER_2 is 0x%02X\r\n", (uint8_t)g_ui32SR4);   
 	am_util_delay_us(1000); 
 
 	//
@@ -1596,7 +1598,7 @@ am_devices_mspi_flash_id(uint32_t ui32Module)
   ui32DeviceID = (ui8Response[7] << 16) | (ui8Response[8] << 8) | ui8Response[9];
 #else
     ui32Status = am_device_command_read(ui32Module, AM_DEVICES_MSPI_FLASH_READ_ID, false, 0, &ui32DeviceID, 3);
-    am_util_stdio_printf("Flash ID is %8.8X\n", ui32DeviceID);
+    am_util_stdio_printf("Flash ID is %8.8X\r\n", ui32DeviceID);
 #endif
     if ( ((ui32DeviceID & AM_DEVICES_MSPI_FLASH_ID_MASK) == AM_DEVICES_MSPI_FLASH_ID) &&
        (AM_HAL_STATUS_SUCCESS == ui32Status) )
@@ -1739,7 +1741,7 @@ am_devices_mspi_flash_read(uint32_t ui32Module,uint8_t *pui8RxBuffer,
 	g_psMSPISettings.eAddrCfg = AM_HAL_MSPI_ADDR_3_BYTE;
   	am_devices_mspi_flash_mode_switch(ui32Module,&g_psMSPISettings);
 	uint32_t ui32RowAddress=ui32ReadAddress >> 12;
-	ui32Status = am_device_command_write(ui32Module, AM_DEVICES_MSPI_GD5FXGQ4XC_READ_FROM_CACHE, true, ui32RowAddress, 0, 0);
+	ui32Status = am_device_command_write(ui32Module, AM_DEVICES_MSPI_GD5FXGQ4XC_PAGE_READ, true, ui32RowAddress, 0, 0);
 	
 
     //
@@ -1766,10 +1768,11 @@ am_devices_mspi_flash_read(uint32_t ui32Module,uint8_t *pui8RxBuffer,
 			           ((g_PIOBuffer[0] >> 6) & AM_DEVICES_MSPI_FLASH_WIP)  
 			        )
 		        {
-		          am_util_stdio_printf("data error > 8,ecc can not correct");
+		          am_util_stdio_printf("data error > 8,ecc can not correct\r\n");
+							break;
 			      }
           }
-        am_util_delay_us(100);
+        am_util_delay_us(10);
         if (bReadComplete)
         {
         break;
@@ -1960,7 +1963,7 @@ am_devices_mspi_flash_write(uint32_t ui32Module, uint8_t *pui8TxBuffer,
     bool                          bWriteComplete = false;
     uint32_t                      ui32BytesLeft = ui32NumBytes;
     uint32_t                      ui32PageAddress = ui32WriteAddress & 0x00000FFF;
-	uint32_t                      ui32RowAddress  = (ui32WriteAddress >>12) & 0x00FFFFFF;
+    uint32_t                      ui32RowAddress  = (ui32WriteAddress >>12) & 0x00FFFFFF;
     uint32_t                      ui32BufferAddress = (uint32_t)pui8TxBuffer;
     uint32_t                      ui32Status;
 
@@ -2178,85 +2181,140 @@ am_devices_mspi_flash_write(uint32_t ui32Module, uint8_t *pui8TxBuffer,
 //! @return 32-bit status
 //
 //*****************************************************************************
+
+void
+am_devices_mspi_flash_bad_block(uint32_t ui32Module,uint32_t *p)
+{
+  uint32_t rflag_addr;
+  uint32_t bad_index=0;
+  for(uint32_t i = 1; i < AM_DEVICES_MSPI_FLASH_MAX_BLOCKS; i++)
+  {
+    //
+    // Read the Bad Block Flag to skip 
+    //
+    rflag_addr = i << 18;
+    am_devices_mspi_flash_read(ui32Module,g_TRXBuffer,rflag_addr,2112,true);
+    if(g_TRXBuffer[2048] == 0x00)
+    {
+      p[bad_index]=i;
+
+	  am_util_stdio_printf("Block[%x] is bad block\r\n",p[bad_index]);
+	  bad_index=bad_index+1;
+    }
+
+  }
+//  for(uint32_t i=0;i<19;i++){
+//}
+}
+
+
+
 uint32_t
 am_devices_mspi_flash_mass_erase(uint32_t ui32Module)
 {
   bool          bEraseComplete = false;
   uint32_t      ui32Status;
+  uint8_t       bad_flag = 0 ;
+  uint32_t      wflag_addr ; //bad block flag write address
+//  uint32_t      rflag_addr ; //bad block flag read  address
 
 
 
-    //
-    // Send the command sequence to do the mass erase.
-    //
+  //
+  // Send the command sequence to do the mass erase.
+  //
   for(uint32_t i = 1; i < AM_DEVICES_MSPI_FLASH_MAX_BLOCKS; i++)
-	  {
-		//
+  {
+    //
+    // Read the Bad Block Flag to skip 
+    //
+//    rflag_addr = i << 18;
+//    am_devices_mspi_flash_read(ui32Module,g_TRXBuffer,rflag_addr,2112,true);
+	
+//    if(g_TRXBuffer[2048] == 0x00)
+//    {
+//      am_util_stdio_printf("Block[%x] is bad block\n",i);
+//      continue;
+//    }
+  
+    //
     // Send the command sequence to enable writing.
     //
+    
     ui32Status = am_device_command_write(ui32Module, AM_DEVICES_MSPI_FLASH_WRITE_ENABLE, false, 0, g_PIOBuffer, 0);
     if (AM_HAL_STATUS_SUCCESS != ui32Status)
     {
         return AM_DEVICES_MSPI_FLASH_STATUS_ERROR;
     }
-	  g_psMSPISettings.eAddrCfg = AM_HAL_MSPI_ADDR_3_BYTE;
-      am_devices_mspi_flash_mode_switch(ui32Module,&g_psMSPISettings);
-      ui32Status = am_device_command_write(ui32Module, AM_DEVICES_MSPI_FLASH_SECTOR_ERASE, true, i << 6, g_PIOBuffer, 0);
-      if (AM_HAL_STATUS_SUCCESS != ui32Status)
-      {
-        return AM_DEVICES_MSPI_FLASH_STATUS_ERROR;
-      }
-      //
-      // Wait for the Write In Progress to indicate the erase is complete.
-      //
 
-	  g_psMSPISettings.eAddrCfg = AM_HAL_MSPI_ADDR_1_BYTE;
-      am_devices_mspi_flash_mode_switch(ui32Module,&g_psMSPISettings);
-      for (uint32_t i = 0; i < AM_DEVICES_MSPI_FLASH_ERASE_TIMEOUT; i++)
-      {
-        bEraseComplete = false;
-        g_PIOBuffer[0] = 0;
-        ui32Status = am_device_command_read(ui32Module,AM_DEVICES_MSPI_GD5FXGQ4XC_GET_FEATURES, true, AM_DEVICES_MSPI_GD5FXGQ4XC_STATUS_REGISTER_ADDRESS, g_PIOBuffer, 1);
-        if ((AM_HAL_MSPI_FLASH_QUADPAIRED == g_psMSPISettings.eDeviceConfig) ||
-            (AM_HAL_MSPI_FLASH_QUADPAIRED_SERIAL == g_psMSPISettings.eDeviceConfig))
-        {
-            bEraseComplete = ((0 == (g_PIOBuffer[0] & AM_DEVICES_MSPI_FLASH_WIP)) &&
-                              (0 == ((g_PIOBuffer[0] >> 8) & AM_DEVICES_MSPI_FLASH_WIP)));
-        }
-        else
-        {
-            bEraseComplete = ((0 == (g_PIOBuffer[0] & AM_DEVICES_MSPI_FLASH_WIP)) &&
-				               (0 == ((g_PIOBuffer[0] >> 2 )& AM_DEVICES_MSPI_FLASH_WIP)));
-        }
-        if (bEraseComplete)
-        {
-            break;
-        }
-        am_util_delay_us(1);
-	  }
-	  
-      //
-      // Check the status.
-      //
-      if (!bEraseComplete)
-      {
-        am_util_stdio_printf("Block[%x] is bad block\n",i);
-      //  return AM_DEVICES_MSPI_FLASH_STATUS_ERROR;
-      }
-    }
+	//
+    // Send the command sequence to erase block.
     //
-    // Send the command sequence to disable writing.
-    //
-    ui32Status = am_device_command_write(ui32Module, AM_DEVICES_MSPI_FLASH_WRITE_DISABLE, false, 0, g_PIOBuffer, 0);
+    
+    g_psMSPISettings.eAddrCfg = AM_HAL_MSPI_ADDR_3_BYTE;
+    am_devices_mspi_flash_mode_switch(ui32Module,&g_psMSPISettings);
+    ui32Status = am_device_command_write(ui32Module, AM_DEVICES_MSPI_FLASH_SECTOR_ERASE, true, i << 6, g_PIOBuffer, 0);
     if (AM_HAL_STATUS_SUCCESS != ui32Status)
     {
-        return AM_DEVICES_MSPI_FLASH_STATUS_ERROR;
+      return AM_DEVICES_MSPI_FLASH_STATUS_ERROR;
     }
+	
+    //
+    // Wait for the Write In Progress to indicate the erase is complete.
+    //
 
+    g_psMSPISettings.eAddrCfg = AM_HAL_MSPI_ADDR_1_BYTE;
+    am_devices_mspi_flash_mode_switch(ui32Module,&g_psMSPISettings);
+    for (uint32_t j= 0; j < AM_DEVICES_MSPI_FLASH_ERASE_TIMEOUT; j++)
+    {
+      bEraseComplete = false;
+      g_PIOBuffer[0] = 0;
+      ui32Status = am_device_command_read(ui32Module,AM_DEVICES_MSPI_GD5FXGQ4XC_GET_FEATURES, true, AM_DEVICES_MSPI_GD5FXGQ4XC_STATUS_REGISTER_ADDRESS, g_PIOBuffer, 1);
+      if ((AM_HAL_MSPI_FLASH_QUADPAIRED == g_psMSPISettings.eDeviceConfig) ||
+            (AM_HAL_MSPI_FLASH_QUADPAIRED_SERIAL == g_psMSPISettings.eDeviceConfig))
+      {
+        bEraseComplete = ((0 == (g_PIOBuffer[0] & AM_DEVICES_MSPI_FLASH_WIP)) &&
+                              (0 == ((g_PIOBuffer[0] >> 8) & AM_DEVICES_MSPI_FLASH_WIP)));
+      }
+      else
+      {
+        bEraseComplete = ((0 == (g_PIOBuffer[0] & AM_DEVICES_MSPI_FLASH_WIP)) && (0 == ((g_PIOBuffer[0] >> 2 )& AM_DEVICES_MSPI_FLASH_WIP)));
+      }
+	  
+      if (bEraseComplete)
+      {
+        break;
+      }
+      am_util_delay_us(1);
+    }
+	  
     //
-    // Return the status.
+    // Check the status.
     //
-    return AM_DEVICES_MSPI_FLASH_STATUS_SUCCESS;
+    if (!bEraseComplete)
+    {
+      wflag_addr = i << 18 | 0x00000800;
+
+	  //
+	  //write bad flag if this block is bad 
+	  //
+      am_devices_mspi_flash_write(ui32Module,&bad_flag,wflag_addr,1);		
+    //  return AM_DEVICES_MSPI_FLASH_STATUS_ERROR;
+    }
+  }
+  //
+  // Send the command sequence to disable writing.
+  //
+  ui32Status = am_device_command_write(ui32Module, AM_DEVICES_MSPI_FLASH_WRITE_DISABLE, false, 0, g_PIOBuffer, 0);
+  if (AM_HAL_STATUS_SUCCESS != ui32Status)
+  {
+    return AM_DEVICES_MSPI_FLASH_STATUS_ERROR;
+  }
+
+  //
+  // Return the status.
+  //
+  return AM_DEVICES_MSPI_FLASH_STATUS_SUCCESS;
 }
 
 //*****************************************************************************
