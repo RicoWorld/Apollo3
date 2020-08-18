@@ -296,7 +296,7 @@ const am_hal_gpio_pincfg_t g_deepsleep_button1 =
 
 
 #define PDM_SIZE                (528)
-#define PDM_BYTES               (PDM_SIZE * 4) //matching for flash one page(2048+64 byte)
+#define PDM_BYTES               (526 * 4) //matching for flash one page(2048+64 byte),8 byte for flag
 #define PRINT_PDM_DATA           0
 
 #define PDM_FFT_SIZE             4096
@@ -532,14 +532,18 @@ const am_hal_gpio_pincfg_t g_AM_BSP_GPIO_GP19_CE0 =
 //#define START_SPEED_INDEX       0
 //#define END_SPEED_INDEX         11
 
-uint32_t        DMATCBBuffer[2560];
-uint8_t         TestBuffer[2048];
-uint8_t         DummyBuffer[1024];
-uint8_t         g_SectorTXBuffer[MSPI_BUFFER_SIZE];
-uint8_t         g_SectorRXBuffer[MSPI_BUFFER_SIZE];
-uint32_t        targer_address[2] = {MSPI_TARGET_ADDRESS,0};
+uint32_t          DMATCBBuffer[2560];
+uint8_t           TestBuffer[2048];
+uint8_t           DummyBuffer[1024];
+uint8_t           g_SectorTXBuffer[MSPI_BUFFER_SIZE];
+uint8_t           g_SectorRXBuffer[MSPI_BUFFER_SIZE];
+volatile uint32_t targer_address[2] = {MSPI_TARGET_ADDRESS,0};
+volatile uint32_t column_address;
 
-volatile bool   g_bMSPIDataReady = false;
+volatile bool     g_bMSPIDataReady = false;
+volatile bool     timeflag = false;
+volatile uint32_t timestamp[6];
+uint32_t blocklist[20]={0};
 
 
 
@@ -622,6 +626,83 @@ const am_hal_mspi_dev_config_t      MSPI_Flash_Quad_CE0_MSPIConfig =
   .scramblingEndAddr    = 0,
 };
 
+static void
+soft_reset(void)
+{
+  uint32_t ui32Status;
+
+  
+  am_hal_pdm_disable(PDMHandle);
+			  
+  am_devices_led_array_init(am_bsp_psLEDs, AM_BSP_NUM_LEDS);
+			  
+  ui32Status=am_devices_mspi_flash_reset(MSPI_TEST_MODULE);
+  if (AM_DEVICES_MSPI_FLASH_STATUS_SUCCESS != ui32Status)
+  {
+    am_util_stdio_printf("Failed to RESET the MSPI and Flash Device correctly!\r\n");
+  }
+  ui32Status=am_devices_mspi_flash_mass_erase(MSPI_TEST_MODULE);
+  {
+    am_util_stdio_printf("Failed to MASS ERASE the MSPI and Flash Device correctly!\r\n");
+  }
+
+  targer_address[0] = MSPI_TARGET_ADDRESS;
+//  targer_address[0] = 0XBFC0000;
+  targer_address[1] = 0;
+			   
+//  column_address = 0xFF81000;
+  power_up = true;			  
+  am_devices_mspi_flash_write(MSPI_TEST_MODULE,(uint8_t *)targer_address, 0xFF81000, 8); 
+  am_devices_mspi_flash_read(MSPI_TEST_MODULE,(uint8_t *)targer_address, 0xFF81000, 8,true); 
+	
+  am_devices_mspi_flash_bad_block(MSPI_TEST_MODULE, blocklist);
+
+  
+  for (int ix = 0; ix < AM_BSP_NUM_LEDS; ix++)
+  {
+    am_util_delay_ms(500); 
+    am_devices_led_off(am_bsp_psLEDs, ix);
+  }
+
+}
+
+
+
+static void 
+address_get (void)
+{
+
+  //
+  // getting a data write address after poweron
+  //
+
+  uint32_t count = 0;  //for power on to find the next block address
+  
+  while(1)
+  {
+	if(power_up) // FISRT POWER UP,Read Register From 1022 block
+	{
+	  am_devices_mspi_flash_read(MSPI_TEST_MODULE,g_SectorRXBuffer, 0xFF81000+count,MSPI_BUFFER_SIZE,true);    //7FC0000,511 block for register
+	}
+	else // if system hold,fisrt read register from next address
+	{
+	  am_devices_mspi_flash_read(MSPI_TEST_MODULE,g_SectorRXBuffer, column_address,MSPI_BUFFER_SIZE,true);	   
+	}
+	uint32_t *current_address = (uint32_t *)g_SectorRXBuffer;
+	for(uint32_t i = 2;i < MSPI_BUFFER_SIZE/8; i=i+1)
+	{ 
+		if(current_address[i] == 0xffffffff && current_address[i+1] == 0xffffffff)
+		{
+		  targer_address[0] =  current_address[i-2];
+		  targer_address[1] =  current_address[i-1];
+		  power_up	  = false;
+		  return;
+		}
+	}
+	count = count + 0x1000;   
+  }
+  
+}
 
 
 static void 
@@ -644,17 +725,43 @@ ConfigGP19AsGpioOutputForPullHighCE0Pin (void)
 
 }
 
+static void 
+time_stamp (void)
+{
+
+  //
+  // get the timestamp
+  //
+
+
+
+  am_hal_rtc_time_get(&hal_time);
+
+
+  timestamp[0] = hal_time.ui32Hour;
+  timestamp[1] = hal_time.ui32Minute;
+  timestamp[2] = hal_time.ui32Second;
+  timestamp[3] = hal_time.ui32Month+1;
+  timestamp[4] = hal_time.ui32DayOfMonth;
+  timestamp[5] = hal_time.ui32Year;
+
+  
+
+}
 
 void
 pdm2mspi(void)
 {
 	uint32_t ui32Status;
 	uint8_t *pi8PCMData;
+	uint8_t *timebuffer;
+	uint32_t i_step;
 
 
   //
   // Generate data into the Sector Buffer
   //
+
     
   if(!buff_switch)
   {
@@ -666,16 +773,54 @@ pdm2mspi(void)
     pi8PCMData = (uint8_t *) g_ui32PDMDataBuffer2;
 //	am_util_stdio_printf("read from pdm buffer2\n");
   }
+
+
+  if(timeflag)
+  {
+    time_stamp();
+    timebuffer = (uint8_t*) timestamp;
+    g_SectorTXBuffer[0]=0x00;
+    g_SectorTXBuffer[1]=0x00;
+    g_SectorTXBuffer[2]=0x00;
+    g_SectorTXBuffer[3]=0x00;
+    g_SectorTXBuffer[4]=0x00;
+    g_SectorTXBuffer[5]=0x00;
+    g_SectorTXBuffer[6]=0x00;
+    g_SectorTXBuffer[7]=0x00;
+    for(uint32_t i = 0; i < 24; i++)
+    {g_SectorTXBuffer[i+8]= timebuffer[i];}
+    i_step = 24;
+  }
+  else
+  {
+    g_SectorTXBuffer[0]=0x00;
+    g_SectorTXBuffer[1]=0x00;
+    g_SectorTXBuffer[2]=0x01;
+    g_SectorTXBuffer[3]=0x00;
+    g_SectorTXBuffer[4]=0x01;
+    g_SectorTXBuffer[5]=0x00;
+    g_SectorTXBuffer[6]=0x00;
+    g_SectorTXBuffer[7]=0x00;
+    i_step = 0;
+  }
   //
   // Generate data into the Sector Buffer
   //
 	
-  for (uint32_t i = 0; i < MSPI_BUFFER_SIZE; i++)
+  for (uint32_t i = i_step; i < PDM_BYTES; i++)
   {
-    g_SectorTXBuffer[i] = pi8PCMData[i];
+    g_SectorTXBuffer[i+8] = pi8PCMData[i];
 
   }
-	
+
+  //
+  //bad block and page 0 skip
+  //
+  for(uint32_t i=0;i<19;i++)
+  {
+	if((targer_address[0] >> 18) == blocklist[i]){ targer_address[0] = targer_address[0]+0x40000;}
+  }
+  if((targer_address[0] & 0x0003F000) == 0){targer_address[0] = targer_address[0] +0x1000;}
 
 	
   //
@@ -692,10 +837,61 @@ pdm2mspi(void)
   
   g_bMSPIDataReady = true;
 
+  timeflag = false;
 
 }
 
 
+static void 
+uart_data_get(void)
+{
+  uint32_t read_address = MSPI_TARGET_ADDRESS;
+
+  if(uart_transfer)
+  {
+    am_devices_led_on(am_bsp_psLEDs, 1);
+    for(;read_address< 0xff7f000;)
+    {  
+      //
+      // read bad block flag
+      //
+
+
+      for(uint32_t i=0;i<19;i++)
+      {
+        if((read_address >> 18) == blocklist[i]){ read_address = read_address+0x40000;}
+      }
+      if((read_address & 0x0003F000) == 0){read_address = read_address +0x1000;}
+
+      //
+      //getting data in flash which transfer by uart 
+      //
+      am_devices_mspi_flash_read(MSPI_TEST_MODULE,g_SectorRXBuffer,read_address ,MSPI_BUFFER_SIZE,true);
+      if((g_SectorRXBuffer[0] == 0xff) & ((g_SectorRXBuffer[1] == 0xff) ))
+      {
+        am_util_stdio_printf("\r\nFlash READ OVER !\r\n");
+        uart_transfer = false;
+		am_util_delay_ms(500); //for flash power on timing
+		am_devices_led_off(am_bsp_psLEDs, 1);
+        return;
+      }
+      else
+      {
+        for(uint32_t j = 0; j<MSPI_BUFFER_SIZE; j++)
+        {
+          am_util_stdio_printf("%02x",g_SectorRXBuffer[j]); 	  
+        }	  
+      }
+      read_address = read_address + 0x1000;
+      if(!uart_transfer){
+        am_util_stdio_printf("\r\nFlash READ Interrput !\r\n");
+        break;}		
+    }
+  }
+  am_devices_led_off(am_bsp_psLEDs, 1);
+  uart_transfer = false;
+  
+}
 
 
 
@@ -814,13 +1010,13 @@ am_ctimer_isr(void)
 int
 main(void)
 {
-
+	
     //*****************************************************************************
     //
     // GLOBAL Config
     //
     //*****************************************************************************
-    uint32_t column_address;
+
     //
     // Set the clock frequency.
     //
@@ -1000,6 +1196,7 @@ main(void)
         am_util_stdio_printf("Flash Device ID is uncorrectly!\r\n");
     }
 
+    am_devices_mspi_flash_bad_block(MSPI_TEST_MODULE, blocklist);
 
 	
     //*****************************************************************************
@@ -1038,7 +1235,7 @@ main(void)
     //
     for (int ix = 0; ix < AM_BSP_NUM_LEDS; ix++)
     {
-    	am_devices_led_off(am_bsp_psLEDs, ix);
+      am_devices_led_off(am_bsp_psLEDs, ix);
       am_util_delay_ms(500);
     }
 		
@@ -1099,32 +1296,33 @@ main(void)
         g_ui32TBottonEnd=false;
         if(g_ui32TimerCount > 4) 
         {
-					 am_hal_pdm_disable(PDMHandle);
+          soft_reset();
+//           am_hal_pdm_disable(PDMHandle);
 					
-           am_devices_led_array_init(am_bsp_psLEDs, AM_BSP_NUM_LEDS);
+//           am_devices_led_array_init(am_bsp_psLEDs, AM_BSP_NUM_LEDS);
 					
-           ui32Status=am_devices_mspi_flash_reset(MSPI_TEST_MODULE);
-					 if (AM_DEVICES_MSPI_FLASH_STATUS_SUCCESS != ui32Status)
-           {
-             am_util_stdio_printf("Failed to RESET the MSPI and Flash Device correctly!\r\n");
-           }
-           ui32Status=am_devices_mspi_flash_mass_erase(MSPI_TEST_MODULE);
-					 {
-             am_util_stdio_printf("Failed to MASS ERASE the MSPI and Flash Device correctly!\r\n");
-           }
-           targer_address[0] = MSPI_TARGET_ADDRESS;
+//           ui32Status=am_devices_mspi_flash_reset(MSPI_TEST_MODULE);
+//					 if (AM_DEVICES_MSPI_FLASH_STATUS_SUCCESS != ui32Status)
+//           {
+//             am_util_stdio_printf("Failed to RESET the MSPI and Flash Device correctly!\r\n");
+//           }
+//           ui32Status=am_devices_mspi_flash_mass_erase(MSPI_TEST_MODULE);
+//					 {
+//             am_util_stdio_printf("Failed to MASS ERASE the MSPI and Flash Device correctly!\r\n");
+//           }
+//           targer_address[0] = MSPI_TARGET_ADDRESS;
 					
-           targer_address[1] = 0;
+//           targer_address[1] = 0;
 					 
-           column_address = 0x7FC0000;
+//           column_address = 0xFF81000;
 					
-           am_devices_mspi_flash_write(MSPI_TEST_MODULE,(uint8_t *)targer_address, 0x7FC0000, 8);			
+//           am_devices_mspi_flash_write(MSPI_TEST_MODULE,(uint8_t *)targer_address, 0xFF81000, 8);			
 							
-           for (int ix = 0; ix < AM_BSP_NUM_LEDS; ix++)
-           {
-             am_util_delay_ms(500); 
-             am_devices_led_off(am_bsp_psLEDs, ix);
-           }
+//           for (int ix = 0; ix < AM_BSP_NUM_LEDS; ix++)
+//           {
+//             am_util_delay_ms(500); 
+//             am_devices_led_off(am_bsp_psLEDs, ix);
+//           }
         }
         else
         {
@@ -1133,35 +1331,37 @@ main(void)
 					
           if(power_on)
           {
-            uint32_t count = 0;  //for power up to find the next block address
-            bool     address_get = false;
-            while(1)
-            {
-              if(power_up) // FISRT POWER UP,Read Register From 511 block
-              {
-                am_devices_mspi_flash_read(MSPI_TEST_MODULE,g_SectorRXBuffer, 0x7FC0000+count,MSPI_BUFFER_SIZE,true);	 //511 block for register
-              }
-              else
-              {
-                am_devices_mspi_flash_read(MSPI_TEST_MODULE,g_SectorRXBuffer, column_address,MSPI_BUFFER_SIZE,true);	 
-              }
-              uint32_t *current_address = (uint32_t *)g_SectorRXBuffer;
-              for(uint32_t i = 2;i < MSPI_BUFFER_SIZE/8; i=i+1)
-              {	
-                  if(current_address[i] == 0xffffffff && current_address[i+1] == 0xffffffff)
-                  {
-             	    targer_address[0] =  current_address[i-2];
-                    targer_address[1] =  current_address[i-1];
-                    power_up    = false;
-                    address_get = true;
-                    break;
-                  }
-              }
-              if(address_get){break;}
-              count = count + 0x1000;	
-            }
-						am_hal_pdm_enable(PDMHandle);
-						am_util_delay_ms(100);
+            timeflag = true;
+//            uint32_t count = 0;  //for power up to find the next block address
+//            bool     address_get = false;
+//            while(1)
+//            {
+//              if(power_up) // FISRT POWER UP,Read Register From 511 block
+//              {
+//                am_devices_mspi_flash_read(MSPI_TEST_MODULE,g_SectorRXBuffer, 0xFF81000+count,MSPI_BUFFER_SIZE,true);	 //511 block for register
+//              }
+//              else
+//              {
+//                am_devices_mspi_flash_read(MSPI_TEST_MODULE,g_SectorRXBuffer, column_address,MSPI_BUFFER_SIZE,true);	 
+//              }
+//              uint32_t *current_address = (uint32_t *)g_SectorRXBuffer;
+//              for(uint32_t i = 2;i < MSPI_BUFFER_SIZE/8; i=i+1)
+//              {	
+//                  if(current_address[i] == 0xffffffff && current_address[i+1] == 0xffffffff)
+//                  {
+//             	    targer_address[0] =  current_address[i-2];
+//                    targer_address[1] =  current_address[i-1];
+//                    power_up    = false;
+//                    address_get = true;
+//                    break;
+//                  }
+//              }
+//              if(address_get){break;}
+//              count = count + 0x1000;	
+//            }
+            address_get();
+            am_hal_pdm_enable(PDMHandle);
+            am_util_delay_ms(100);
             pdm_data_get();
           }
           else
@@ -1169,7 +1369,7 @@ main(void)
             uint32_t page_offset;
             targer_address[1] = targer_address[1] + 1;
             page_offset       = targer_address[1] / 264   ; 						
-            column_address    = 0x7FC0000 + page_offset * 0x1000 + (targer_address[1]<<3); //8 byte per write
+            column_address    = 0xFF81000 + page_offset * 0x1000 + (targer_address[1]<<3); //8 byte per write
 					
 
             am_devices_mspi_flash_write(MSPI_TEST_MODULE,(uint8_t *)targer_address, column_address, 8);					
@@ -1187,29 +1387,31 @@ main(void)
       {
         g_ui32TBottonEnd=false;
         botton2 = false;
-        if(uart_transfer)
-        {
-          am_devices_led_on(am_bsp_psLEDs, 1);
-          uint32_t target_address = MSPI_TARGET_ADDRESS;
-          //
-          // Print the banner.
-          //
-          for(uint32_t i =0;i<200;i++)
-          {
-            am_devices_mspi_flash_read(MSPI_TEST_MODULE,g_SectorRXBuffer,target_address ,MSPI_BUFFER_SIZE,true);
-            for(uint32_t i =0;i<MSPI_BUFFER_SIZE;i++)
-            {
-              am_util_stdio_printf("%02x",g_SectorRXBuffer[i]);				
-            }
-            target_address = target_address + 0x1000;
-            if(!uart_transfer)
-            {
-              break;
-            }					
-          }
-          am_devices_led_off(am_bsp_psLEDs, 1);
-          uart_transfer = false;
-        }
+        uart_data_get();
+
+ //       if(uart_transfer)
+ //       {
+ //         am_devices_led_on(am_bsp_psLEDs, 1);
+ //         uint32_t target_address = MSPI_TARGET_ADDRESS;
+ //         //
+ //         // Print the banner.
+ //         //
+ //         for(uint32_t i =0;i<200;i++)
+ //         {
+ //           am_devices_mspi_flash_read(MSPI_TEST_MODULE,g_SectorRXBuffer,target_address ,MSPI_BUFFER_SIZE,true);
+ //           for(uint32_t i =0;i<MSPI_BUFFER_SIZE;i++)
+ //           {
+ //             am_util_stdio_printf("%02x",g_SectorRXBuffer[i]);				
+ //           }
+ //           target_address = target_address + 0x1000;
+ //           if(!uart_transfer)
+ //           {
+ //             break;
+ //           }					
+ //         }
+ //         am_devices_led_off(am_bsp_psLEDs, 1);
+ //         uart_transfer = false;
+        
        }
 
       //
